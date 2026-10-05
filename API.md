@@ -338,7 +338,8 @@ Read from the environment or `.env`. All names have the `T212_` prefix except `O
 | `T212_DATABASE_URL` | `postgresql+psycopg://t212:t212@localhost:5432/t212` | Postgres connection |
 | `T212_MCP_AUTH_TOKEN` | none | Bearer token for HTTP |
 | `OPENAI_API_KEY` | none | For the discovery agent |
-| `T212_LLM_MODEL` | `gpt-5` | OpenAI model |
+| `T212_LLM_MODEL` | `gpt-6.1-sol` | OpenAI model |
+| `T212_REASONING_EFFORT` | `high` | Reasoning effort sent to OpenAI (empty for the model's default) |
 | `T212_LLM_KWARGS` | `{}` | Extra `ChatOpenAI` arguments, as JSON |
 | `T212_SEARCH_PROVIDER` | `duckduckgo` | `duckduckgo`, `tavily` or `brave` |
 | `T212_AGENT_TOKEN_BUDGET` | `400000` | Token cap per fund |

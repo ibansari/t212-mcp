@@ -36,7 +36,8 @@ class Settings(DatabaseSettings):
 
     # Look-through agent, backed by OpenAI. llm_model is an OpenAI model name; the key is read
     # from OPENAI_API_KEY (in .env or the environment).
-    llm_model: str = "gpt-5"
+    llm_model: str = "gpt-6.1-sol"
+    reasoning_effort: str | None = "high"  # passed to OpenAI; None leaves the model's default
     openai_api_key: SecretStr | None = Field(default=None, validation_alias="OPENAI_API_KEY")
     llm_kwargs: dict = {}
     search_provider: Literal["duckduckgo", "tavily", "brave"] = "duckduckgo"

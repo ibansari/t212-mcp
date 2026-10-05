@@ -6,6 +6,7 @@ import json
 import re
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timezone
+from html import unescape
 from typing import Any
 from urllib.parse import urljoin
 
@@ -59,6 +60,11 @@ def normalize_download_url(url: str) -> str:
     if m:
         return f"https://drive.google.com/uc?export=download&id={m.group(1)}"
     return url
+
+
+def page_text(html: str, limit: int = 300) -> str:
+    text = re.sub(r"(?is)<(script|style)\b.*?</\1>|<[^>]+>", " ", html)
+    return re.sub(r"\s+", " ", unescape(text)).strip()[:limit]
 
 
 def http_client() -> httpx.AsyncClient:
@@ -163,6 +169,17 @@ def _cell_str(v: Any) -> str:
     return str(v).strip()
 
 
+def _row_text(row: list[Any], max_cells: int = 12) -> str:
+    cells = [_cell_str(v)[:40] for v in row if _cell_str(v)]
+    return " | ".join(cells[:max_cells]) + (" | ..." if len(cells) > max_cells else "")
+
+
+def rows_preview(rows: list[list[Any]], limit: int = 12) -> str:
+    """The first non-empty rows, numbered, so a reader can see where the header and data start."""
+    shown = [f"  row {i}: {_row_text(r)}" for i, r in enumerate(rows[:200]) if any(_cell_str(v) for v in r)]
+    return "\n".join(shown[:limit])
+
+
 def find_header_row(rows: list[list[Any]], marker: str | None, columns_needed: list[str]) -> int:
     wanted = {c.lower() for c in columns_needed}
     for i, row in enumerate(rows[:200]):
@@ -171,7 +188,8 @@ def find_header_row(rows: list[list[Any]], marker: str | None, columns_needed: l
             return i
         if not marker and wanted <= cells:
             return i
-    raise ExtractionError(f"Header row not found (looked for {marker or sorted(wanted)})")
+    looked = f"a cell equal to {marker!r}" if marker else f"a row containing all of {sorted(wanted)}"
+    raise ExtractionError(f"Header row not found (looked for {looked})\nFirst rows of the file:\n{rows_preview(rows)}")
 
 
 def to_float(v: Any) -> float | None:
@@ -261,8 +279,20 @@ def holdings_from_records(records: list[dict], recipe: Recipe) -> list[Holding]:
             )
         )
     if not out:
-        raise ExtractionError("No holdings rows matched the column map")
+        raise ExtractionError(f"No holdings rows matched the column map\n{_column_evidence(records, cols)}")
     return out
+
+
+def _column_evidence(records: list[dict], cols) -> str:
+    if not records:
+        return "The source has no data rows."
+    available = [str(k) for k in records[0].keys() if str(k).strip()]
+    lower = {k.lower() for k in available}
+    mapped = [f"{field}={getattr(cols, field)!r} ({'found' if getattr(cols, field).lower() in lower else 'NOT FOUND'})"
+              for field in ("name", "weight", "isin", "country", "sector") if getattr(cols, field)]
+    sample = {k: _cell_str(v)[:30] for k, v in list(records[0].items())[:12] if str(k).strip()}
+    return (f"Column map: {', '.join(mapped)}.\nAvailable columns (exact names): {' | '.join(available[:40])}\n"
+            f"First data row: {json.dumps(sample, default=str)}")
 
 
 def table_to_records(rows: list[list[Any]], recipe: Recipe) -> tuple[list[dict], str, str | None]:
@@ -291,6 +321,23 @@ def table_to_records(rows: list[list[Any]], recipe: Recipe) -> tuple[list[dict],
     return records, preamble[:1500], as_of
 
 
+def _json_evidence(data: Any) -> str:
+    def lists(obj: Any, path: str, depth: int) -> list[str]:
+        out = []
+        if isinstance(obj, list) and obj and isinstance(obj[0], dict):
+            keys = ", ".join(list(map(str, obj[0].keys()))[:12])
+            out.append(f"'{path}' ({len(obj)} items; keys: {keys})")
+        elif isinstance(obj, dict) and depth < 4:
+            for k, v in obj.items():
+                out += lists(v, f"{path}.{k}" if path else str(k), depth + 1)
+        return out
+
+    top = ", ".join(f"{k} ({type(v).__name__})" for k, v in list(data.items())[:20]) if isinstance(data, dict) else type(data).__name__
+    found = lists(data, "", 0)
+    return f"Top-level keys: {top}\nLists of objects in the response (usable as json_holdings_path): " + (
+        "; ".join(found[:8]) if found else "none")
+
+
 # ---------------------------------------------------------------- recipe execution
 
 
@@ -299,7 +346,7 @@ def _parse_payload(content: bytes, fmt: str, recipe: Recipe) -> tuple[list[Holdi
         data = json.loads(content)
         records = dot_get(data, recipe.json_holdings_path)
         if not isinstance(records, list):
-            raise ExtractionError(f"json_holdings_path {recipe.json_holdings_path!r} is not a list")
+            raise ExtractionError(f"json_holdings_path {recipe.json_holdings_path!r} is not a list\n{_json_evidence(data)}")
         as_of = None
         if recipe.as_of and recipe.as_of.startswith("json:"):
             as_of = to_date(dot_get(data, recipe.as_of.split(":", 1)[1].strip()))
@@ -379,7 +426,7 @@ async def extract(recipe: Recipe, isin: str, ticker: str, recipe_id: str | None 
     resp = await http_get(normalize_download_url(url))
     fmt = recipe.file_format or sniff_format(resp.content, resp.headers.get("content-type", ""), url)
     if fmt == "html" or sniff_format(resp.content) == "html":
-        raise ExtractionError(f"{url} returned an HTML page, not a data file")
+        raise ExtractionError(f"{url} returned an HTML page, not a data file\nPage text: {page_text(resp.text)}")
     if fmt in ("xls", "xlsx") and sniff_format(resp.content) not in ("xls", "xlsx"):
         fmt = sniff_format(resp.content, resp.headers.get("content-type", ""), url)
     holdings, excerpt, as_of = _parse_payload(resp.content, fmt, recipe)

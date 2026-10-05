@@ -86,6 +86,25 @@ async def test_html_instead_of_file_is_an_error():
         await extract(HSBC, HSBC_ISIN, "HIES")
 
 
+@respx.mock
+async def test_extraction_errors_show_what_the_source_contains():
+    hsbc_route()
+    wrong_col = HSBC.model_copy(update={"columns": ColumnMap(name="SecurityName", weight="Weight")})
+    with pytest.raises(extractors.ExtractionError) as e:
+        await extract(wrong_col, HSBC_ISIN, "HIES")
+    assert "weight='Weight' (NOT FOUND)" in str(e.value) and "Weighting" in str(e.value)
+
+    with pytest.raises(extractors.ExtractionError) as e:
+        await extract(HSBC.model_copy(update={"header_contains": "Ticker"}), HSBC_ISIN, "HIES")
+    assert "row 6: ISIN | CUSIP | SecurityName" in str(e.value)
+
+
+def test_json_path_error_lists_usable_paths():
+    bad = INVESCO.model_copy(update={"json_holdings_path": "data.holdings"})
+    with pytest.raises(extractors.ExtractionError, match=r"'holdings' \(\d+ items; keys: name, isin"):
+        _parse_payload((FIX / "invesco_IE000UOXRAM8_holdings.json").read_bytes(), "json", bad)
+
+
 # ------------------------------------------------------------------ validator
 
 

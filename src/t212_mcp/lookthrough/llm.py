@@ -35,9 +35,12 @@ class TokenBudget(BaseCallbackHandler):
 
 
 def chat_model(settings: Settings) -> BaseChatModel:
+    kwargs = dict(settings.llm_kwargs)
+    if settings.reasoning_effort:
+        kwargs.setdefault("reasoning_effort", settings.reasoning_effort)
     if settings.openai_api_key is not None:
-        return ChatOpenAI(model=settings.llm_model, api_key=settings.openai_api_key, **settings.llm_kwargs)
-    return ChatOpenAI(model=settings.llm_model, **settings.llm_kwargs)  # falls back to OPENAI_API_KEY in the environment
+        kwargs.setdefault("api_key", settings.openai_api_key)
+    return ChatOpenAI(model=settings.llm_model, **kwargs)  # without api_key, falls back to OPENAI_API_KEY in the environment
 
 
 def structured(model: BaseChatModel, schema: type[T]):

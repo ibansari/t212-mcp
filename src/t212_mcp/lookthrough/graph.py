@@ -75,10 +75,19 @@ Research report (may be empty if the recipe came from the registry):
 {findings}
 
 Choose action:
-- 'fix': the source is right but the recipe is wrong (column names, header row, weight scale, date cell, URL \
-template). Return the corrected recipe.
-- 'rediscover': the source itself is wrong, gone, or not this fund's data. Research again.
-- 'give_up': the data is not publicly available in a machine-readable form."""
+- 'fix': the source is right but the recipe is wrong (column names, header row, weight scale, date cell, JSON path). \
+Return the corrected recipe.
+- 'rediscover': the source itself is wrong, gone, blocked, or not this fund's data. Research again.
+- 'give_up': the data is not publicly available in a machine-readable form.
+
+How to decide:
+- The failure often shows what the source actually contains: its available columns, its first rows, or the lists \
+inside its JSON. When it does and the data is there, choose 'fix' and use the exact names it shows. Change only \
+what the evidence says is wrong and keep the rest of the recipe as it is.
+- Never invent column names, keys or URLs that do not appear in the failure, the recipe or the research report.
+- An HTML page where a data file was expected (a cookie wall, login, error or landing page), an HTTP error, or data \
+for a different fund means the source cannot be used as configured: choose 'rediscover' rather than guessing a new \
+URL."""
 
 
 class RepairDecision(BaseModel):
@@ -230,7 +239,7 @@ class Pipeline:
             return {"report": report.model_dump(), "error": None, "holdings": fh.model_dump()}
         failure = err or "; ".join(report.errors)
         log.info("%s: recipe failed: %s", state["fund"]["ticker"], failure[:200])
-        line = f"- attempt {state.get('attempts', 0)}: {recipe.kind} {recipe.url or recipe.page_url} -> {failure}"
+        line = f"- attempt {state.get('attempts', 0)}: {recipe.kind} {recipe.url or recipe.page_url} -> {failure[:800]}"
         return {"report": report.model_dump() if report else None, "error": failure,
                 "history": state.get("history", []) + [line]}
 

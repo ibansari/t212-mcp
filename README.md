@@ -76,7 +76,9 @@ The server also provides the resource `portfolio://summary` and the prompt `dail
 
 The look-through tools read data saved in the database by a refresh. Each fund's holdings are fetched by a *recipe* that says where the issuer publishes the holdings file and how to parse it. Refreshing with saved recipes needs no LLM.
 
-When a fund has no recipe, or its recipe stops working, a discovery agent can search the issuer's site and write or repair one. The agent uses OpenAI: set `OPENAI_API_KEY` in `.env`, and optionally `T212_LLM_MODEL` (default `gpt-5`). The agent only runs when you allow it, and it is capped at `T212_MAX_AGENT_RUNS_PER_DAY` runs per day (default 5).
+When a fund has no recipe, or its recipe stops working, a discovery agent can search the issuer's site and write or repair one. The agent uses OpenAI: set `OPENAI_API_KEY` in `.env`, and optionally `T212_LLM_MODEL` (default `gpt-6.1-sol`) and `T212_REASONING_EFFORT` (default `high`). The agent only runs when you allow it, and it is capped at `T212_MAX_AGENT_RUNS_PER_DAY` runs per day (default 5).
+
+When a recipe fails, the error shows what the source actually contains: its available columns and first data row, its first rows when the header row can't be found, the lists inside a JSON response, or the text of an HTML page served where a file was expected. The repair step uses this to fix the recipe from evidence, or researches again when the source has moved or is blocked.
 
 ```bash
 uv run t212-mcp refresh-holdings                 # re-run saved recipes only
@@ -101,6 +103,38 @@ Everything is stored in Postgres (`src/t212_mcp/db/models.py`):
 | `agent_runs` | Discovery agent events. The daily limit counts `agent_start` events |
 
 The LangGraph refresh checkpoints to the same database.
+
+## Evals
+
+`evals/` scores the look-through agent. Both tiers need `OPENAI_API_KEY`.
+
+| Tier | What runs | Web | Graded on |
+|---|---|---|---|
+| `component` | The `draft` and `repair` LLM steps, given a fixed research report or a broken recipe and its real error | Offline: issuer files are served from `tests/fixtures/` | Does the recipe the model returns extract holdings that pass validation, with the right size and top holding? For repair, did the model pick the right action (fix / rediscover / give up)? |
+| `e2e` | The full discover → draft → test → repair graph for 10 real funds (iShares, Vanguard, Xtrackers, HSBC, Wahed, physical gold), starting from no recipes | Live | Is a recipe saved and validated? Does it hold enough securities, including mega-caps like Apple and TSMC, from the issuer's own site? Tokens, attempts and time |
+
+```bash
+uv run python -m evals list                              # all cases
+uv run python -m evals component                         # 9 cases x 3 trials
+uv run python -m evals component --model gpt-5 --reasoning-effort ""   # compare configs ("" = model default)
+uv run python -m evals e2e --case ishares_sp500 --trials 3
+uv run python -m evals report                            # compare all saved runs
+```
+
+Each run is saved to `evals/results/<run_id>.json` plus a Markdown summary (git-ignored). Use `--fail-under 0.8` to exit non-zero in CI.
+
+- **Component cases** use pinned fixture data, so the same answer always gets the same grade. Only the model's answers vary.
+- **E2E runs** use a separate `<database>_eval` database, wiped before every trial, and never touch your real recipes. They need local Postgres and Chromium (`uv run playwright install chromium`). They cost real tokens, so start with one case. Issuer sites change, so expect some failures caused by the sites rather than the agent; the failure text in the report shows which.
+- **The harness has its own tests** in `tests/test_evals.py`. They run offline with a stub model.
+
+Component results so far:
+
+| Model | Before error evidence | After |
+|---|---|---|
+| `gpt-6.1-sol` (high effort, default) | 70% | 100%, ~2.1k tokens and 6 s per call |
+| `gpt-5` | 59% | 100%, ~3.2k tokens and 15 s per call |
+
+Both models now pass every component case, so these cases no longer tell models apart. The live `e2e` tier hasn't been run yet.
 
 ## Development
 
