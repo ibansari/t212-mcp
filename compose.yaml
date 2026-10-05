@@ -1,0 +1,36 @@
+name: t212-mcp
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: t212
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: t212
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"  # so `uv run` on the host can use the same database
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U t212 -d t212"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  mcp:
+    build: .
+    image: t212-mcp
+    env_file: .env
+    environment:
+      T212_DATABASE_URL: postgresql+psycopg://t212:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/t212
+      T212_MCP_AUTH_TOKEN: ${T212_MCP_AUTH_TOKEN:?set T212_MCP_AUTH_TOKEN in .env}
+    ports:
+      - "127.0.0.1:8765:8765"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
