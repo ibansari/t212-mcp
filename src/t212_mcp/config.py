@@ -42,7 +42,6 @@ class Settings(DatabaseSettings):
     # Optional: keys created before Trading 212 introduced secrets authenticate with the key alone.
     api_secret: SecretStr | None = None
     env: Literal["live", "demo"] = "live"
-    data_dir: Path = Path.home() / ".t212_mcp"  # logs from the scheduled refresh
     # HTTP auth (one is required when binding to anything other than localhost).
     # Sign-in with WorkOS AuthKit (multi-user): the AuthKit domain (e.g. https://your-app.authkit.app), the WorkOS
     # API key and client id (account page sign-in and Vault, where users' Trading 212 keys are stored), a Fernet key

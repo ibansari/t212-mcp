@@ -425,15 +425,13 @@ def daily_briefing() -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Trading 212 MCP server")
     parser.add_argument("command", nargs="?", default="serve",
-                        choices=["serve", "refresh-holdings", "resolve-entities", "send-digest", "upgrade-multiuser",
-                                 "install-schedule", "uninstall-schedule"])
+                        choices=["serve", "refresh-holdings", "resolve-entities", "send-digest", "upgrade-multiuser"])
     parser.add_argument("--http", action="store_true", help="serve over streamable HTTP instead of stdio")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8765)))
     parser.add_argument("--no-agent", action="store_true",
                         help="refresh-holdings: don't let the LLM agent research funds without a working recipe")
     parser.add_argument("--allow-agent", action="store_true", help=argparse.SUPPRESS)  # the default now; kept for old commands
-    parser.add_argument("--at", default="07:30", help="install-schedule: daily time HH:MM")
     parser.add_argument("--preview", type=Path, metavar="FILE.html", help="send-digest: write the email locally instead")
     parser.add_argument("--only-at-local-hour", type=int, metavar="H",
                         help="send-digest: do nothing unless it is hour H in --tz (lets a UTC cron follow UK time)")
@@ -485,15 +483,6 @@ def main() -> None:
             return
         logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s", datefmt="%H:%M:%S")
         print(asyncio.run(digest.run(accounts.get_settings(), preview=args.preview)))
-    elif args.command == "install-schedule":
-        from .lookthrough.schedule import install
-
-        hour, minute = (int(x) for x in args.at.split(":"))
-        print(install(accounts.get_settings(), hour, minute))
-    elif args.command == "uninstall-schedule":
-        from .lookthrough.schedule import uninstall
-
-        print(uninstall())
     elif args.http:
         from .auth import ConfigError, http_auth
 

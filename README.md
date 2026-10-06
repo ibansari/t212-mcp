@@ -14,7 +14,7 @@ See [API.md](API.md) for the full tool reference and [architecture.md](architect
 ## Use with Claude Code
 
 ```bash
-claude mcp add trading212 -- uv --directory /Users/ibraheemansari/mcp-test run t212-mcp
+claude mcp add trading212 -- uv --directory /path/to/t212-mcp run t212-mcp
 ```
 
 Then ask things like "give me a portfolio update" or "what dividends have I received recently?".
@@ -95,7 +95,7 @@ Add to `claude_desktop_config.json`:
   "mcpServers": {
     "trading212": {
       "command": "uv",
-      "args": ["--directory", "/Users/ibraheemansari/mcp-test", "run", "t212-mcp"]
+      "args": ["--directory", "/path/to/t212-mcp", "run", "t212-mcp"]
     }
   }
 }
@@ -142,13 +142,10 @@ Separately listed affiliates stay separate, e.g. Samsung Electronics vs Samsung 
 When a recipe fails, the error shows what the source actually contains: its available columns and first data row, its first rows when the header row can't be found, the lists inside a JSON response, or the text of an HTML page served where a file was expected. The repair step uses this to fix the recipe from evidence, or researches again when the source has moved or is blocked.
 
 ```bash
-uv run t212-mcp refresh-holdings                 # re-run saved recipes only
+uv run t212-mcp refresh-holdings                 # refresh; the agent researches funds without a working recipe
 uv run t212-mcp refresh-holdings --no-agent      # saved recipes only, no OpenAI spend (the agent is on by default)
-uv run t212-mcp install-schedule --at 07:30      # macOS: daily refresh (with the agent) via launchd
-uv run t212-mcp uninstall-schedule
 ```
 
-The scheduled job logs to `~/.t212_mcp/refresh.log`.
 
 ## Morning digest
 

@@ -345,8 +345,6 @@ t212-mcp [serve] [--http] [--host HOST] [--port PORT]
 t212-mcp refresh-holdings [--no-agent]
 t212-mcp resolve-entities
 t212-mcp send-digest [--preview FILE.html] [--only-at-local-hour H] [--tz ZONE]
-t212-mcp install-schedule [--at HH:MM]
-t212-mcp uninstall-schedule
 ```
 
 | Command | Description |
@@ -355,8 +353,6 @@ t212-mcp uninstall-schedule
 | `refresh-holdings` | Same as `refresh_etf_holdings`; prints the per-fund results |
 | `resolve-entities` | Group the look-through's securities into companies now, with the agent settling ambiguous cases (see the README) |
 | `send-digest` | Email the morning digest via Resend (see the README). `--preview` writes it locally instead of sending; `--only-at-local-hour 7 --tz Europe/London` exits without sending unless it's 07:00 there |
-| `install-schedule` | macOS: daily `refresh-holdings` via launchd (default 07:30), logging to `~/.t212_mcp/refresh.log` |
-| `uninstall-schedule` | Remove the launchd job |
 
 ## Configuration
 
@@ -393,4 +389,3 @@ Read from the environment or `.env`. All names have the `T212_` prefix except `O
 | `T212_MAX_REPAIR_ATTEMPTS` | `3` | Draft/repair attempts per fund |
 | `T212_MAX_AGENT_RUNS_PER_DAY` | `5` | Agent runs per day, across all users |
 | `T212_AGENT_ENABLED` | `true` | Off switch for the discovery and entity agents (they spend OpenAI credit) |
-| `T212_DATA_DIR` | `~/.t212_mcp` | Where the scheduled job writes its log |
