@@ -5,6 +5,7 @@ import asyncio
 import logging
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Literal
 
 from fastmcp import FastMCP
@@ -380,12 +381,16 @@ def daily_briefing() -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Trading 212 MCP server")
     parser.add_argument("command", nargs="?", default="serve",
-                        choices=["serve", "refresh-holdings", "install-schedule", "uninstall-schedule"])
+                        choices=["serve", "refresh-holdings", "send-digest", "install-schedule", "uninstall-schedule"])
     parser.add_argument("--http", action="store_true", help="serve over streamable HTTP instead of stdio")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8765)))
     parser.add_argument("--allow-agent", action="store_true", help="let the LLM agent research funds without a working recipe")
     parser.add_argument("--at", default="07:30", help="install-schedule: daily time HH:MM")
+    parser.add_argument("--preview", type=Path, metavar="FILE.html", help="send-digest: write the email locally instead")
+    parser.add_argument("--only-at-local-hour", type=int, metavar="H",
+                        help="send-digest: do nothing unless it is hour H in --tz (lets a UTC cron follow UK time)")
+    parser.add_argument("--tz", default="Europe/London", help="send-digest: time zone for --only-at-local-hour")
     args = parser.parse_args()
 
     if args.command == "refresh-holdings":
@@ -402,6 +407,14 @@ def main() -> None:
         exp = asyncio.run(refresh(client().settings, allow_agent=args.allow_agent))
         print(json.dumps({"as_of": exp["as_of"], "results": exp["refresh_results"],
                           "funds_with_data_pct": exp["coverage"]["funds_with_data_pct"]}, indent=2))
+    elif args.command == "send-digest":
+        from . import digest
+
+        if args.only_at_local_hour is not None and not digest.is_local_hour(args.only_at_local_hour, args.tz):
+            print(f"Not {args.only_at_local_hour}:00 in {args.tz}; skipping")
+            return
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s", datefmt="%H:%M:%S")
+        print(asyncio.run(digest.run(client().settings, preview=args.preview)))
     elif args.command == "install-schedule":
         from .lookthrough.schedule import install
 

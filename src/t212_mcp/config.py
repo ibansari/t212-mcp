@@ -51,6 +51,11 @@ class Settings(DatabaseSettings):
     # Or a static bearer token (ignored when GitHub sign-in is configured).
     mcp_auth_token: SecretStr | None = None
 
+    # Morning digest email (t212-mcp send-digest), sent through Resend. digest_to is comma-separated.
+    resend_api_key: SecretStr | None = None
+    digest_to: str | None = None
+    digest_from: str = "Portfolio digest <onboarding@resend.dev>"
+
     # Look-through agent, backed by OpenAI. llm_model is an OpenAI model name; the key is read
     # from OPENAI_API_KEY (in .env or the environment).
     llm_model: str = "gpt-6.1-sol"
@@ -64,7 +69,7 @@ class Settings(DatabaseSettings):
     max_agent_runs_per_day: int = 5
 
     @field_validator("api_secret", "github_client_id", "github_client_secret", "public_url", "mcp_auth_token",
-                     "openai_api_key", mode="before")
+                     "openai_api_key", "resend_api_key", "digest_to", mode="before")
     @classmethod
     def _blank_is_unset(cls, v):
         """`KEY=` in .env means not set, not an empty secret."""

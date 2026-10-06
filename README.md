@@ -118,6 +118,33 @@ uv run t212-mcp uninstall-schedule
 
 The scheduled job logs to `~/.t212_mcp/refresh.log`.
 
+## Morning digest
+
+`t212-mcp send-digest` emails a portfolio summary:
+- **Totals:** total value and the change since the last digest.
+- **Chart and table:** how each holding moved. The change is the price move applied to the shares you hold now, so buying or selling shows as a note, not as a gain or loss.
+- **Headlines:** from the last 24 hours, for your 10 largest positions plus any company that makes up more than 5% of the portfolio once ETFs are looked through.
+
+Headlines come from Google News RSS, with no API key and no LLM. Look-through companies only appear once a look-through refresh has run.
+
+Email goes through [Resend](https://resend.com). Set these:
+
+| Variable | Value |
+|---|---|
+| `T212_RESEND_API_KEY` | Your Resend API key |
+| `T212_DIGEST_TO` | Recipient. Comma-separate several |
+| `T212_DIGEST_FROM` | Optional. Defaults to `onboarding@resend.dev`, which can only send to your Resend sign-up address. Verify a domain in Resend to send anywhere else |
+
+```bash
+uv run t212-mcp send-digest --preview digest.html   # write the email locally (plus digest.png) instead of sending
+uv run t212-mcp send-digest                         # send now
+```
+
+**On Railway** a separate `digest` service runs it, configured by `railway.digest.json`:
+- It's scheduled for 06:00 and 07:00 UTC on weekdays, and `--only-at-local-hour 7` sends only when it's 07:00 in London. That keeps the email at 07:00 UK time on both sides of the clock change.
+- Each digest is compared with the previous digest's snapshot, which is stored separately from `get_portfolio_update`'s.
+- That snapshot is saved only after the email sends, so a failed send doesn't skip a day.
+
 ## Data model
 
 Everything is stored in Postgres (`src/t212_mcp/db/models.py`):

@@ -327,6 +327,7 @@ Without `allow_agent`, only saved recipes are used and no LLM is called. Funds r
 ```
 t212-mcp [serve] [--http] [--host HOST] [--port PORT]
 t212-mcp refresh-holdings [--allow-agent]
+t212-mcp send-digest [--preview FILE.html] [--only-at-local-hour H] [--tz ZONE]
 t212-mcp install-schedule [--at HH:MM]
 t212-mcp uninstall-schedule
 ```
@@ -335,6 +336,7 @@ t212-mcp uninstall-schedule
 |---|---|
 | `serve` (default) | Run the MCP server over stdio, or over HTTP with `--http` (default `127.0.0.1:8765`). A non-local `--host` requires `T212_MCP_AUTH_TOKEN` |
 | `refresh-holdings` | Same as `refresh_etf_holdings`; prints the per-fund results |
+| `send-digest` | Email the morning digest via Resend (see the README). `--preview` writes it locally instead of sending; `--only-at-local-hour 7 --tz Europe/London` exits without sending unless it's 07:00 there |
 | `install-schedule` | macOS: daily `refresh-holdings --allow-agent` via launchd (default 07:30), logging to `~/.t212_mcp/refresh.log` |
 | `uninstall-schedule` | Remove the launchd job |
 
@@ -354,6 +356,9 @@ Read from the environment or `.env`. All names have the `T212_` prefix except `O
 | `T212_PUBLIC_URL` | `https://$RAILWAY_PUBLIC_DOMAIN` | The server's public base URL, used for OAuth redirects |
 | `T212_MCP_AUTH_TOKEN` | none | Static bearer token for HTTP (ignored when GitHub sign-in is configured) |
 | `PORT` | `8765` | HTTP port (set by Railway) |
+| `T212_RESEND_API_KEY` | none | Resend API key for `send-digest` |
+| `T212_DIGEST_TO` | none | Digest recipient(s), comma-separated |
+| `T212_DIGEST_FROM` | `Portfolio digest <onboarding@resend.dev>` | Digest sender; use an address on a domain verified in Resend |
 | `OPENAI_API_KEY` | none | For the discovery agent |
 | `T212_LLM_MODEL` | `gpt-6.1-sol` | OpenAI model |
 | `T212_REASONING_EFFORT` | `high` | Reasoning effort sent to OpenAI (empty for the model's default) |
