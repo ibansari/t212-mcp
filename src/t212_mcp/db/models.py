@@ -132,6 +132,32 @@ class ExposureSnapshot(Base):
     payload: Mapped[dict]  # the full exposure dict
 
 
+class SecurityEntity(Base):
+    """Which company an ISIN belongs to. Securities sharing an entity_key are added up in the look-through."""
+
+    __tablename__ = "security_entities"
+
+    isin: Mapped[str] = mapped_column(String(12), primary_key=True)
+    entity_key: Mapped[str] = mapped_column(String(200), index=True)
+    name: Mapped[str | None] = mapped_column(String(200))  # canonical company name, when the agent set one
+    figi_name: Mapped[str | None] = mapped_column(String(200))
+    ticker: Mapped[str | None] = mapped_column(String(40))
+    exch_code: Mapped[str | None] = mapped_column(String(60))
+    security_type: Mapped[str | None] = mapped_column(String(60))
+    method: Mapped[str] = mapped_column(String(8))  # figi | name | llm
+    reason: Mapped[str | None] = mapped_column(Text)
+    decided_at: Mapped[datetime]
+
+
+class EntityDecision(Base):
+    """Clusters of entity keys the agent has already ruled on, so it isn't asked again."""
+
+    __tablename__ = "entity_decisions"
+
+    cluster: Mapped[str] = mapped_column(String(1000), primary_key=True)  # sorted keys joined by " | "
+    decided_at: Mapped[datetime]
+
+
 class AgentTrace(Base):
     """The full run tree of one agent step (discover / draft / repair) for one fund, for debugging."""
 

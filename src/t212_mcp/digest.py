@@ -81,9 +81,11 @@ def look_through(store, positions: list[dict]) -> dict | None:
     funds = {isin for isin, rec in records.items() if rec}
     if not funds:
         return None
+    from .lookthrough.entities import entity_map
+
     holdings = {isin: store.last_good(isin) for isin in funds}
     status = {isin: records[isin]["status"] for isin in funds}
-    return compute_exposure(positions, funds, holdings, status)
+    return compute_exposure(positions, funds, holdings, status, entities=entity_map(store, None))
 
 
 def previous_exposure(store, before_day: str) -> dict | None:
@@ -107,6 +109,8 @@ def exposure_rows(exposure: dict, previous: dict | None, top_n: int = 15) -> lis
     for r in exposure["all_securities"][:top_n]:
         funds = [_fund_symbol(t) for t in r["via_funds"]]
         held = (["Direct"] if r["direct"] else []) + funds[:3] + ([f"+{len(funds) - 3}"] if len(funds) > 3 else [])
+        if len(r.get("members", [])) > 1:
+            held.append(f"{len(r['members'])} share lines")
         rows.append({"name": r["name"], "isin": r.get("isin"), "value": r["value"], "pct": r["pct_of_portfolio"],
                      "change_pp": round(r["pct_of_portfolio"] - before[key(r)], 2) if key(r) in before else None,
                      "held": ", ".join(held) if held else "–"})

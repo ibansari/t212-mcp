@@ -171,3 +171,50 @@ E2E_CASES = [
     E2ECase("invesco_physical_gold", GOLD_FUND, GOLD_EXPECT),
     E2ECase("ishares_physical_gold", Fund("IE00B4ND3602", "iShares Physical Gold ETC", "IGLN"), GOLD_EXPECT),
 ]
+
+
+# ---------------------------------------------------------------- component: entity resolution
+# Real clusters from a portfolio's look-through, with OpenFIGI evidence as returned on 2026-10-06. The agent gets
+# no tools in evals, so it is judged on the evidence alone.
+
+
+@dataclass(frozen=True)
+class ResolveCase:
+    id: str
+    securities: dict  # isin -> (OpenFIGI name, security type, exchange, ticker, name in the fund file)
+    expect: tuple  # the correct partition: tuples of ISINs, one per company
+
+
+RESOLVE_CASES = [
+    ResolveCase("resolve_tsmc_adr", {
+        "TW0002330008": ("TAIWAN SEMICONDUCTOR MANUFAC", "Common Stock", "TT (Taiwan Stock Exchange)", "2330", "Taiwan Semiconductor Manufacturing"),
+        "US8740391003": ("TAIWAN SEMICONDUCTOR-SP ADR", "Depositary Receipt", "US", "TSM", "TAIWAN SEMICONDUCTOR-SP ADR")},
+        (("TW0002330008", "US8740391003"),)),
+    ResolveCase("resolve_amd_vs_amec", {
+        "US0079031078": ("ADVANCED MICRO DEVICES", "Common Stock", "US", "AMD", "Advanced Micro Devices Inc"),
+        "CNE100003MM9": ("ADVANCED MICRO-FABRICATION-A", "Common Stock", "CH", "688012", "Advanced Micro-fabrication Equipment")},
+        (("US0079031078",), ("CNE100003MM9",))),
+    ResolveCase("resolve_merck_vs_merck_kgaa", {
+        "US58933Y1055": ("MERCK & CO. INC.", "Common Stock", "US", "MRK", "MERCK & CO. INC."),
+        "DE0006599905": ("MERCK KGAA", "Common Stock", "GR", "MRK", "Merck Kgaa")},
+        (("US58933Y1055",), ("DE0006599905",))),
+    ResolveCase("resolve_reliance_gdr_vs_us_reliance", {
+        "INE002A01018": ("RELIANCE INDUSTRIES LIMITED", "Common Stock", "IN", "RELIANCE", "Reliance Industries Ltd"),
+        "US7594701077": ("RELIANCE INDS-SPONS GDR 144A", "Depositary Receipt", "LX", "RIGDS", "Reliance Inds-spons Gdr 144a"),
+        "US7595091023": ("RELIANCE INC", "Common Stock", "US", "RS", "Reliance Inc")},
+        (("INE002A01018", "US7594701077"), ("US7595091023",))),
+    ResolveCase("resolve_delta_parent_vs_thai_subsidiary", {
+        "TW0002308004": ("DELTA ELECTRONICS INC", "Common Stock", "TT (Taiwan Stock Exchange)", "2308", "Delta Electronics Inc"),
+        "TH0528A10Z14": ("DELTA ELECTRONICS THAI-FORGN", "Common Stock", "TB", "DELTA/F", "Delta Electronics (Thailand)"),
+        "TH0528010R18": ("DELTA ELECTRONICS THAI-NVDR", "Depositary Receipt", "TB", "DELTA-R", "Delta Electronics Thai-nvdr")},
+        (("TW0002308004",), ("TH0528A10Z14", "TH0528010R18"))),
+    ResolveCase("resolve_coca_cola_vs_bottlers", {
+        "US1912161007": ("COCA-COLA CO/THE", "Common Stock", "US", "KO", "Coca-cola Co/the"),
+        "US1910981026": ("COCA-COLA CONSOLIDATED INC", "Common Stock", "US", "COKE", "Coca-cola Consolidated Inc"),
+        "MX01KO000002": ("COCA-COLA FEMSA SAB DE CV", "Unit", "US", "COCSF", "Coca-Cola Femsa SAB de CV")},
+        (("US1912161007",), ("US1910981026",), ("MX01KO000002",))),
+    ResolveCase("resolve_petrobras_ordinary_and_preference", {
+        "BRPETRACNPR6": ("PETROBRAS - PETROLEO BRAS-PR", "Preference", "BZ", "PETR4", "Petroleo Brasileiro SA Pet"),
+        "BRPETRACNOR9": ("PETROBRAS - PETROLEO BRAS", "Common Stock", "BZ", "PETR3", "Petroleo Brasileiro SA Pet")},
+        (("BRPETRACNPR6", "BRPETRACNOR9"),)),
+]

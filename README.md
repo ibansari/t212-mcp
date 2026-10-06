@@ -109,6 +109,14 @@ When a fund has no recipe, or its recipe stops working, a discovery agent can se
 
 For issuers whose source is already known (`src/t212_mcp/lookthrough/known_sources.py`, currently HSBC and Invesco), a fund with no saved recipe is tried against that source first. If it works, it's saved as a recipe and no LLM is needed. The agent also gets the known source as a starting hint when researching.
 
+**Companies, not just ISINs.** A company can appear under several ISINs: share classes (Alphabet A/C), preference shares, and home listings vs ADRs/GDRs (TSMC in Taipei and New York). After each refresh, securities making up at least 0.01% of the portfolio are grouped into companies, in three stages:
+
+1. **[OpenFIGI](https://www.openfigi.com):** identifies each ISIN (name, security type, exchange). Free, and cached per ISIN.
+2. **Rules:** names that match once class and listing markers are removed (CL A, SP ADR, PREF, GDR 144A) are treated as one company.
+3. **An agent:** settles near-matches, such as "Taiwan Semiconductor Manufac" vs "Taiwan Semiconductor-SP ADR". It only runs with `--allow-agent` or `t212-mcp resolve-entities`, uses the OpenFIGI evidence plus search tools, and returns a structured decision. Its decisions are cached in `security_entities` and traced like the discovery agent.
+
+Separately listed affiliates stay separate, e.g. Samsung Electronics vs Samsung Electro-Mechanics, or Merck & Co vs Merck KGaA.
+
 **What the agent did:**
 - **Railway logs:** every agent step logs one line, with the tool and its main argument, a short result, and tokens used, plus a running total against the cap.
 - **Postgres:** the full run tree, with inputs, outputs, tokens, timings and errors, is stored in `agent_traces`. Ask Claude for `get_agent_trace` on a ticker to see why a fund failed.
@@ -182,7 +190,7 @@ The LangGraph refresh checkpoints to the same database.
 
 | Tier | What runs | Web | Graded on |
 |---|---|---|---|
-| `component` | The `draft` and `repair` LLM steps, given a fixed research report or a broken recipe and its real error | Offline: issuer files are served from `tests/fixtures/` | Does the recipe the model returns extract holdings that pass validation, with the right size and top holding? For repair, did the model pick the right action (fix / rediscover / give up)? |
+| `component` | The `draft` and `repair` LLM steps, given a fixed research report or a broken recipe and its real error. Also `resolve`: the entity-resolution agent on real clusters of securities, with no search tools | Offline: issuer files are served from `tests/fixtures/` | Does the recipe the model returns extract holdings that pass validation, with the right size and top holding? For repair, did the model pick the right action (fix / rediscover / give up)? |
 | `e2e` | The full discover → draft → test → repair graph for 10 real funds (iShares, Vanguard, Xtrackers, HSBC, Wahed, physical gold), starting from no recipes | Live | Is a recipe saved and validated? Does it hold enough securities, including mega-caps like Apple and TSMC, from the issuer's own site? Tokens, attempts and time |
 
 ```bash

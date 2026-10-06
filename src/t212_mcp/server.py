@@ -264,6 +264,9 @@ async def get_etf_exposure(top_n: int = 25, group_by: Literal["security", "count
         out["countries"] = exp["countries"][:top_n]
     else:
         out["sectors"] = exp["sectors"][:top_n]
+        unknown = sum(s["pct"] for s in exp["sectors"] if s["name"].startswith("Unknown"))
+        if unknown >= 90:
+            out["note"] = "Sector data is unavailable: the issuers' holdings files used here don't include sectors."
     return out
 
 
@@ -392,7 +395,8 @@ def daily_briefing() -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Trading 212 MCP server")
     parser.add_argument("command", nargs="?", default="serve",
-                        choices=["serve", "refresh-holdings", "send-digest", "install-schedule", "uninstall-schedule"])
+                        choices=["serve", "refresh-holdings", "resolve-entities", "send-digest", "install-schedule",
+                                 "uninstall-schedule"])
     parser.add_argument("--http", action="store_true", help="serve over streamable HTTP instead of stdio")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8765)))
@@ -416,6 +420,24 @@ def main() -> None:
         exp = asyncio.run(refresh(client().settings, allow_agent=args.allow_agent))
         print(json.dumps({"as_of": exp["as_of"], "results": exp["refresh_results"],
                           "funds_with_data_pct": exp["coverage"]["funds_with_data_pct"]}, indent=2))
+    elif args.command == "resolve-entities":
+        from . import digest
+        from .lookthrough import entities
+        from .lookthrough.store import Store
+
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s", datefmt="%H:%M:%S")
+        for noisy in ("httpx", "httpx2", "httpcore", "openai", "primp", "ddgs"):
+            logging.getLogger(noisy).setLevel(logging.WARNING)
+
+        async def resolve_now() -> dict:
+            settings = client().settings
+            store = Store(settings.database_url)
+            exposure = digest.look_through(store, await _fetch_positions())
+            if not exposure:
+                return {"error": "no look-through data; run refresh-holdings first"}
+            return await entities.resolve(store, settings, exposure["all_securities"], allow_agent=True)
+
+        print(asyncio.run(resolve_now()))
     elif args.command == "send-digest":
         from . import digest
 

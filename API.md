@@ -217,7 +217,7 @@ What you really own once each ETF is broken into its holdings, combined with the
 | `countries` | `{name, value, pct}[]` | When `group_by = "country"` |
 | `sectors` | `{name, value, pct}[]` | When `group_by = "sector"` |
 
-`Security` = `{name, isin, value, pct_of_portfolio, direct, via_funds}`. `direct` is the value held directly, and `via_funds` maps each fund ticker to the value held through it.
+`Security` = `{name, isin, value, pct_of_portfolio, direct, via_funds, members?}`. Share classes and listings of one company (e.g. Alphabet A and C, TSMC in Taipei and its US ADR) are added up into one row. `members` then lists each ISIN and its value, and `isin` is the largest line. `direct` is the value held directly, and `via_funds` maps each fund ticker to the value held through it.
 
 `coverage` = `{funds_value, funds_with_data_pct, uncovered_value, funds[]}`. Each fund is `{ticker, name, value, status, coverage, as_of, holdings_count}`, where `status` is `ok`, `stale`, `unresolved` or `missing`, and `coverage` is `full` or `partial` (the issuer lists only top holdings). Value the server can't see through is grouped under `Unknown (...)` countries and sectors.
 
@@ -341,6 +341,7 @@ Without `allow_agent`, only saved recipes are used and no LLM is called. Funds r
 ```
 t212-mcp [serve] [--http] [--host HOST] [--port PORT]
 t212-mcp refresh-holdings [--allow-agent]
+t212-mcp resolve-entities
 t212-mcp send-digest [--preview FILE.html] [--only-at-local-hour H] [--tz ZONE]
 t212-mcp install-schedule [--at HH:MM]
 t212-mcp uninstall-schedule
@@ -350,6 +351,7 @@ t212-mcp uninstall-schedule
 |---|---|
 | `serve` (default) | Run the MCP server over stdio, or over HTTP with `--http` (default `127.0.0.1:8765`). A non-local `--host` requires `T212_MCP_AUTH_TOKEN` |
 | `refresh-holdings` | Same as `refresh_etf_holdings`; prints the per-fund results |
+| `resolve-entities` | Group the look-through's securities into companies now, with the agent settling ambiguous cases (see the README) |
 | `send-digest` | Email the morning digest via Resend (see the README). `--preview` writes it locally instead of sending; `--only-at-local-hour 7 --tz Europe/London` exits without sending unless it's 07:00 there |
 | `install-schedule` | macOS: daily `refresh-holdings --allow-agent` via launchd (default 07:30), logging to `~/.t212_mcp/refresh.log` |
 | `uninstall-schedule` | Remove the launchd job |
@@ -377,6 +379,7 @@ Read from the environment or `.env`. All names have the `T212_` prefix except `O
 | `T212_LLM_MODEL` | `gpt-6.1-sol` | OpenAI model |
 | `T212_REASONING_EFFORT` | `high` | Reasoning effort sent to OpenAI (empty for the model's default) |
 | `T212_LLM_KWARGS` | `{}` | Extra `ChatOpenAI` arguments, as JSON |
+| `T212_OPENFIGI_API_KEY` | none | Optional OpenFIGI key; raises the rate limit for entity resolution |
 | `T212_SEARCH_PROVIDER` | `duckduckgo` | `duckduckgo`, `tavily` or `brave` |
 | `T212_AGENT_TOKEN_BUDGET` | `400000` | Token cap per fund |
 | `T212_AGENT_RECURSION_LIMIT` | `40` | Maximum agent steps per discovery |

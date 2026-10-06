@@ -51,8 +51,11 @@ def compute_exposure(
     funds: dict[str, FundHoldings | None],
     fund_status: dict[str, str],
     top_n: int = 25,
+    entities: dict[str, dict] | None = None,
 ) -> dict:
-    """positions: normalized T212 positions (ticker, name, isin, value). funds: holdings per fund ISIN."""
+    """positions: normalized T212 positions (ticker, name, isin, value). funds: holdings per fund ISIN.
+    entities: isin -> {key, name}; securities sharing a key (share classes, ADRs of one company) are added up."""
+    entities = entities or {}
     invested = sum(p["value"] or 0.0 for p in positions)
     securities: dict[str, dict] = {}
     countries: dict[str, float] = defaultdict(float)
@@ -62,8 +65,15 @@ def compute_exposure(
     fund_rows = []
 
     def add_security(key: str, name: str, value: float, via: str | None, isin: str | None):
-        entry = securities.setdefault(key, {"name": None, "isin": isin, "direct": 0.0, "via": defaultdict(float)})
+        entity = entities.get(isin) if isin else None
+        if entity:
+            key = f"entity:{entity['key']}"
+        entry = securities.setdefault(key, {"name": None, "canonical": None, "direct": 0.0, "via": defaultdict(float),
+                                            "members": defaultdict(float)})
         entry["name"] = _better_name(entry["name"], name, direct=via is None)
+        if entity and entity.get("name"):
+            entry["canonical"] = entity["name"]
+        entry["members"][isin] += value
         if via is None:
             entry["direct"] += value
         else:
@@ -121,16 +131,21 @@ def compute_exposure(
     rows = []
     for key, e in securities.items():
         total = e["direct"] + sum(e["via"].values())
-        rows.append(
-            {
-                "name": e["name"],
-                "isin": e["isin"],
-                "value": round(total, 2),
-                "pct_of_portfolio": pct(total),
-                "direct": round(e["direct"], 2),
-                "via_funds": {k: round(v, 2) for k, v in sorted(e["via"].items(), key=lambda kv: -kv[1])},
-            }
-        )
+        members = sorted(e["members"].items(), key=lambda kv: -kv[1])
+        name = e["canonical"] or e["name"]
+        if len(members) > 1 and not e["canonical"] and key.startswith("entity:"):
+            name = clean_name(key.split(":", 1)[1])  # the company, not whichever share line was bigger
+        row = {
+            "name": name,
+            "isin": members[0][0],  # the largest line
+            "value": round(total, 2),
+            "pct_of_portfolio": pct(total),
+            "direct": round(e["direct"], 2),
+            "via_funds": {k: round(v, 2) for k, v in sorted(e["via"].items(), key=lambda kv: -kv[1])},
+        }
+        if len(members) > 1:  # several ISINs of one company
+            row["members"] = [{"isin": i, "value": round(v, 2)} for i, v in members]
+        rows.append(row)
     rows.sort(key=lambda r: -r["value"])
 
     def ranked(d: dict[str, float]) -> list[dict]:

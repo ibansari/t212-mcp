@@ -62,6 +62,7 @@ class Settings(DatabaseSettings):
     reasoning_effort: str | None = "high"  # passed to OpenAI; None leaves the model's default
     openai_api_key: SecretStr | None = Field(default=None, validation_alias="OPENAI_API_KEY")
     llm_kwargs: dict = {}
+    openfigi_api_key: SecretStr | None = None  # optional; raises OpenFIGI's rate limit for entity resolution
     search_provider: Literal["duckduckgo", "tavily", "brave"] = "duckduckgo"
     agent_token_budget: int = 400_000
     agent_recursion_limit: int = 40
@@ -69,7 +70,7 @@ class Settings(DatabaseSettings):
     max_agent_runs_per_day: int = 5
 
     @field_validator("api_secret", "github_client_id", "github_client_secret", "public_url", "mcp_auth_token",
-                     "openai_api_key", "resend_api_key", "digest_to", mode="before")
+                     "openai_api_key", "resend_api_key", "digest_to", "openfigi_api_key", mode="before")
     @classmethod
     def _blank_is_unset(cls, v):
         """`KEY=` in .env means not set, not an empty secret."""

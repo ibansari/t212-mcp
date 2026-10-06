@@ -8,7 +8,7 @@ from t212_mcp.lookthrough.graph import Pipeline
 from t212_mcp.lookthrough.recipes import Recipe
 
 from . import fixture_web
-from .cases import DRAFT_CASES, FIXTURE_TODAY, REPAIR_CASES, DraftCase, RepairCase
+from .cases import DRAFT_CASES, FIXTURE_TODAY, REPAIR_CASES, RESOLVE_CASES, DraftCase, RepairCase, ResolveCase
 from .graders import grade_recipe, run_recipe
 
 
@@ -59,11 +59,32 @@ async def run_repair(case: RepairCase, p: Pipeline) -> dict:
                     "recipe": recipe.model_dump(exclude_none=True)}
 
 
+async def run_resolve(case: ResolveCase, p: Pipeline) -> dict:
+    from t212_mcp.lookthrough import entities
+    from t212_mcp.lookthrough.llm import TokenBudget
+
+    known = {isin: {"entity_key": entities.issuer_key(figi), "figi_name": figi, "security_type": kind,
+                    "exch_code": exch, "ticker": ticker} for isin, (figi, kind, exch, ticker, _) in case.securities.items()}
+    names = {isin: v[4] for isin, v in case.securities.items()}
+    cluster = sorted({e["entity_key"] for e in known.values()})
+    budget = TokenBudget(p.settings.agent_token_budget)
+    t0 = time.monotonic()
+    groups = await entities.adjudicate(p.model, [cluster], known, names, [budget], p.settings.agent_recursion_limit,
+                                       tools=[])
+    got = {frozenset(i for i in g.isins if i in known) for g in groups} - {frozenset()}
+    want = {frozenset(g) for g in case.expect}
+    trial = {"tokens": budget.used, "seconds": round(time.monotonic() - t0, 1),
+             "groups": [{"isins": sorted(g.isins), "name": g.name, "reason": g.reason} for g in groups]}
+    return trial | {"passed": got == want, "failure": None if got == want else
+                    f"grouped {sorted(sorted(g) for g in got)}, expected {sorted(sorted(g) for g in want)}"}
+
+
 async def run(settings: Settings, trials: int, case_ids: set[str] | None = None, concurrency: int = 4,
               model=None) -> list[dict]:
     """One result per case: {id, step, trials: [...]}."""
     p = pipeline(settings, model)
-    cases = [("draft", c, run_draft) for c in DRAFT_CASES] + [("repair", c, run_repair) for c in REPAIR_CASES]
+    cases = ([("draft", c, run_draft) for c in DRAFT_CASES] + [("repair", c, run_repair) for c in REPAIR_CASES]
+             + [("resolve", c, run_resolve) for c in RESOLVE_CASES])
     cases = [c for c in cases if not case_ids or c[1].id in case_ids]
     sem = asyncio.Semaphore(concurrency)
 

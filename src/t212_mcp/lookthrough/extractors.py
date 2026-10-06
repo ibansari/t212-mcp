@@ -265,7 +265,7 @@ def holdings_from_records(records: list[dict], recipe: Recipe) -> list[Holding]:
     scale = 100.0 if recipe.weight_scale == "fraction" else 1.0
     out = []
     for rec in records:
-        name = _cell_str(_ci_get(rec, cols.name))
+        name = unescape(_cell_str(_ci_get(rec, cols.name)))  # some APIs send "MERCK &amp; CO."
         weight = to_float(_ci_get(rec, cols.weight))
         if not name or weight is None:
             continue

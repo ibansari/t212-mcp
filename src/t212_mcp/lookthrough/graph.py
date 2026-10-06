@@ -12,7 +12,7 @@ from langgraph.types import Send
 from pydantic import BaseModel, Field
 
 from ..config import Settings
-from . import agent_tools, known_sources
+from . import agent_tools, entities, known_sources
 from .exposure import compute_exposure
 from .extractors import ExtractionError, FundHoldings, extract
 from .llm import BudgetExceeded, TokenBudget, chat_model, structured
@@ -435,6 +435,14 @@ class Pipeline:
             holdings[isin] = self.store.last_good(isin)
             status[isin] = rec.get("status", "missing")
         exposure = compute_exposure(state["positions"], fund_isins, holdings, status)
+        try:  # add up share classes / ADRs of one company; the agent only settles ambiguous cases when allowed
+            stats = await entities.resolve(self.store, self.settings, exposure["all_securities"],
+                                           allow_agent=state.get("allow_agent", False), model=self._model)
+            log.info("entities: %s", stats)
+        except Exception:
+            log.exception("entity resolution failed; exposure uses known entities only")
+        exposure = compute_exposure(state["positions"], fund_isins, holdings, status,
+                                    entities=entities.entity_map(self.store, None))
         exposure["as_of"] = date.today().isoformat()
         exposure["refresh_results"] = state.get("results", [])
         self.store.save_exposure(exposure)

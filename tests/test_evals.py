@@ -69,7 +69,8 @@ async def test_component_runner_with_stub_model(settings):
             outputs.append(RepairDecision(action="fix", reason="stub", recipe=CANONICAL[c.fund.isin]))
         else:
             outputs.append(RepairDecision(action="give_up", reason="stub"))  # wrong: should rediscover
-    results = await component.run(settings, trials=1, concurrency=1, model=StubModel(outputs))
+    ids = {c.id for c in DRAFT_CASES + REPAIR_CASES}  # the stub can't drive the entity-resolution agent
+    results = await component.run(settings, trials=1, case_ids=ids, concurrency=1, model=StubModel(outputs))
     passed = {r["id"]: r["trials"][0]["passed"] for r in results}
     assert passed.pop("repair_cookie_wall") is False
     assert all(passed.values()), [r for r in results if not r["trials"][0]["passed"]]

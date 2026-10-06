@@ -8,7 +8,7 @@ from datetime import datetime
 from t212_mcp.config import Settings
 
 from . import report
-from .cases import DRAFT_CASES, E2E_CASES, REPAIR_CASES
+from .cases import DRAFT_CASES, E2E_CASES, REPAIR_CASES, RESOLVE_CASES
 
 
 def main() -> None:
@@ -32,6 +32,8 @@ def main() -> None:
         for step, cases in (("draft", DRAFT_CASES), ("repair", REPAIR_CASES), ("e2e", E2E_CASES)):
             for c in cases:
                 print(f"{step:7} {c.id:30} {c.fund.ticker:6} {c.fund.name}")
+        for c in RESOLVE_CASES:
+            print(f"{'resolve':7} {c.id:40} {len(c.securities)} securities")
         return
     if args.command == "report":
         print(report.compare())

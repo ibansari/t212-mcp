@@ -120,6 +120,38 @@ class Store:
             out.append({k: v for k, v in d.items() if v is not None})
         return out
 
+    # ---- security entities
+    ENTITY_FIELDS = ("entity_key", "name", "figi_name", "ticker", "exch_code", "security_type", "method", "reason")
+
+    def entities(self, isins: list[str] | None = None) -> dict[str, dict]:
+        with self.sessions() as s:
+            q = select(m.SecurityEntity)
+            if isins is not None:
+                q = q.where(m.SecurityEntity.isin.in_(isins))
+            return {e.isin: {f: getattr(e, f) for f in self.ENTITY_FIELDS} for e in s.scalars(q)}
+
+    def save_entities(self, rows: dict[str, dict]) -> None:
+        now = db.utcnow()
+        with self.sessions.begin() as s:
+            for isin, row in rows.items():
+                e = s.get(m.SecurityEntity, isin) or m.SecurityEntity(isin=isin)
+                for f in self.ENTITY_FIELDS:
+                    setattr(e, f, row.get(f))
+                e.decided_at = now
+                s.add(e)
+
+    def decided_clusters(self) -> set[frozenset]:
+        with self.sessions() as s:
+            return {frozenset(c.split(" | ")) for c in s.scalars(select(m.EntityDecision.cluster))}
+
+    def mark_decided(self, clusters: list[frozenset]) -> None:
+        now = db.utcnow()
+        with self.sessions.begin() as s:
+            for c in clusters:
+                key = " | ".join(sorted(c))[:1000]
+                if s.get(m.EntityDecision, key) is None:
+                    s.add(m.EntityDecision(cluster=key, decided_at=now))
+
     # ---- agent traces
     def save_trace(self, *, isin: str, ticker: str, step: str, model: str | None, tree: dict, tokens: int,
                    keep: int = 30) -> None:
