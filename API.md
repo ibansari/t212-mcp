@@ -1,6 +1,6 @@
 # API reference
 
-The server speaks the [Model Context Protocol](https://modelcontextprotocol.io). It exposes 11 tools, 1 resource and 1 prompt.
+The server speaks the [Model Context Protocol](https://modelcontextprotocol.io). It exposes 12 tools, 1 resource and 1 prompt.
 
 - **HTTP:** `POST <host>/mcp` (streamable HTTP). Requests are authenticated by GitHub sign-in (OAuth 2.1, limited to `T212_ALLOWED_GITHUB_USERS`) or by a static `Authorization: Bearer <token>` (`T212_MCP_AUTH_TOKEN`). Requests without valid credentials get `401`. `GET /health` returns `ok` and needs no authentication.
 - **stdio:** `t212-mcp` with no arguments.
@@ -21,6 +21,7 @@ Errors come back as MCP tool errors (`isError: true`) with a readable message. S
 | [`get_etf_exposure`](#get_etf_exposure) | No | Look-through exposure |
 | [`get_exposure_changes`](#get_exposure_changes) | No | How exposure shifted over time |
 | [`get_holdings_status`](#get_holdings_status) | No | Look-through pipeline health |
+| [`get_agent_trace`](#get_agent_trace) | No | Why the discovery agent did what it did for a fund |
 | [`refresh_etf_holdings`](#refresh_etf_holdings) | Yes | Start a background refresh of fund holdings, optionally with the agent |
 
 None of the tools can place, change or cancel orders.
@@ -269,6 +270,19 @@ Each fund: `{isin, status, checked_at, holdings_as_of, holdings_count, recipe, e
 | `error` | When `failed` |
 
 Refresh status is kept in memory, so a server restart resets it to `idle`. Saved holdings and exposure are kept.
+
+### `get_agent_trace`
+
+Recent discovery-agent traces for one fund, newest first. Use it to see why the agent failed to find or fix a holdings source.
+
+**Parameters**
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `fund` | string | required | Ticker (e.g. `IGDA`) or ISIN |
+| `limit` | int | `3` | Number of traces (max 10) |
+
+**Returns** `{fund, traces[]}`. Each trace is `{at, isin, ticker, step, model, tokens, duration_ms, error, tree}`. `step` is `discover`, `draft` or `repair`. `tree` is the run as nested nodes `{type, name, ms, input, output, tokens?, error?, children}`, with model calls (`llm`) and tool calls (`tool`) in order. Texts are capped at 4,000 characters, and a model call's input keeps only its newest message. The last 30 traces per fund are kept. Traces contain prompts, fund names and public web content, never positions or values.
 
 ### `refresh_etf_holdings`
 

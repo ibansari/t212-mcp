@@ -107,6 +107,12 @@ The look-through tools read data saved in the database by a refresh. Each fund's
 
 When a fund has no recipe, or its recipe stops working, a discovery agent can search the issuer's site and write or repair one. The agent uses OpenAI: set `OPENAI_API_KEY` in `.env`, and optionally `T212_LLM_MODEL` (default `gpt-6.1-sol`) and `T212_REASONING_EFFORT` (default `high`). The agent only runs when you allow it, and it is capped at `T212_MAX_AGENT_RUNS_PER_DAY` runs per day (default 5).
 
+For issuers whose source is already known (`src/t212_mcp/lookthrough/known_sources.py`, currently HSBC and Invesco), a fund with no saved recipe is tried against that source first. If it works, it's saved as a recipe and no LLM is needed. The agent also gets the known source as a starting hint when researching.
+
+**What the agent did:**
+- **Railway logs:** every agent step logs one line, with the tool and its main argument, a short result, and tokens used, plus a running total against the cap.
+- **Postgres:** the full run tree, with inputs, outputs, tokens, timings and errors, is stored in `agent_traces`. Ask Claude for `get_agent_trace` on a ticker to see why a fund failed.
+
 When a recipe fails, the error shows what the source actually contains: its available columns and first data row, its first rows when the header row can't be found, the lists inside a JSON response, or the text of an HTML page served where a file was expected. The repair step uses this to fix the recipe from evidence, or researches again when the source has moved or is blocked.
 
 ```bash
