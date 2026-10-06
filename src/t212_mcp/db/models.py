@@ -2,7 +2,7 @@
 
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, Float, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import Date, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -130,6 +130,21 @@ class ExposureSnapshot(Base):
     cash_inside_funds: Mapped[float] = mapped_column(Float)
     funds_with_data_pct: Mapped[float | None] = mapped_column(Float)
     payload: Mapped[dict]  # the full exposure dict
+
+
+class DigestBaseline(Base):
+    """The portfolio and look-through captured by the digest at its set time each day. Every digest's changes are
+    measured against the previous day's baseline, so extra or manual runs don't move the comparison point."""
+
+    __tablename__ = "digest_baselines"
+    __table_args__ = (UniqueConstraint("env", "day"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    env: Mapped[str] = mapped_column(String(8))
+    day: Mapped[date] = mapped_column(Date)  # local date in the digest's time zone
+    taken_at: Mapped[datetime]
+    portfolio: Mapped[dict]  # snapshots.make_snapshot output
+    exposure: Mapped[dict | None]  # compute_exposure output, when there was look-through data
 
 
 class SecurityEntity(Base):

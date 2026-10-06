@@ -55,6 +55,9 @@ class Settings(DatabaseSettings):
     resend_api_key: SecretStr | None = None
     digest_to: str | None = None
     digest_from: str = "Portfolio digest <onboarding@resend.dev>"
+    # The daily set time: the run at this hour saves the baseline that the next day's changes are measured against.
+    digest_hour: int = 7
+    digest_tz: str = "Europe/London"
 
     # Look-through agent, backed by OpenAI. llm_model is an OpenAI model name; the key is read
     # from OPENAI_API_KEY (in .env or the environment).

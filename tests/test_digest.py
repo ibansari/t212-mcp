@@ -1,9 +1,11 @@
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import httpx
+import pytest
 import respx
 
-from t212_mcp import digest
+from t212_mcp import digest, snapshots
 from t212_mcp.config import Settings
 
 NOW = datetime(2026, 10, 6, 7, 0, tzinfo=timezone.utc)
@@ -127,20 +129,88 @@ EXPOSURE = {
 }
 
 
-def test_exposure_rows_show_how_each_company_is_held_and_its_shift():
-    previous = {"all_securities": [{"name": "Nvidia", "isin": "US67066G1040", "pct_of_portfolio": 14.2}]}
+def test_exposure_rows_show_how_each_company_is_held_and_its_change():
+    previous = {"all_securities": [{"name": "Nvidia", "isin": "US67066G1040", "pct_of_portfolio": 14.2, "value": 1400.0}]}
     rows = digest.exposure_rows(EXPOSURE, previous)
-    assert rows[0] == {"name": "Nvidia", "isin": "US67066G1040", "value": 1457.0, "pct": 14.6, "change_pp": 0.4,
-                       "held": "Direct, GLBL"}
-    assert rows[1]["held"] == "GLBL" and rows[1]["change_pp"] is None  # not in the previous digest
+    assert rows[0] == {"name": "Nvidia", "isin": "US67066G1040", "value": 1457.0, "pct": 14.6, "change": 57.0,
+                       "change_pct": 4.07, "held": "Direct, GLBL"}
+    assert rows[1]["held"] == "GLBL" and rows[1]["change"] is None  # not in the previous digest
 
 
-def test_look_through_section_renders_with_coverage_and_stale_funds():
-    rows = digest.exposure_rows(EXPOSURE, None)
-    page = digest.render_html(SUMMARY, digest.holding_rows(POSITIONS, PREVIOUS), [], PREVIOUS, True, NOW,
+def test_companies_come_first_and_positions_last():
+    previous = {"all_securities": [{"name": "Nvidia", "isin": "US67066G1040", "pct_of_portfolio": 14.2, "value": 1400.0}]}
+    rows = digest.exposure_rows(EXPOSURE, previous)
+    page = digest.render_html(SUMMARY, digest.holding_rows(POSITIONS, PREVIOUS), [], PREVIOUS, False, NOW,
                               EXPOSURE, rows, True)
-    assert "What you really own" in page and "cid:lookthrough-chart" in page
+    assert page.index("What you really own") < page.index("News for your largest holdings") < page.index("Your positions")
+    assert "cid:lookthrough-chart" in page and "Change by holding" not in page
     assert "Covers 100% of your fund value" in page and "2026-10-01 to 2026-10-05" in page
     assert "older data for EMRG" in page and "Direct, GLBL" in page and "United States 18%" in page
-    assert digest.render_exposure_chart(rows).startswith(b"\x89PNG")
-    assert "What you really own" not in digest.render_html(SUMMARY, [], [], None, False, NOW)  # no fund data: no section
+    assert "+£57.00" in page and "+4.07%" in page
+    assert digest.render_chart(rows).startswith(b"\x89PNG")  # companies' change chart
+
+
+def test_without_look_through_the_positions_lead():
+    page = digest.render_html(SUMMARY, digest.holding_rows(POSITIONS, PREVIOUS), [], PREVIOUS, True, NOW)
+    assert "What you really own" not in page and page.index("Change by holding") < page.index("News for")
+
+
+# ------------------------------------------------------------------ fixed daily comparison point (database)
+
+
+@pytest.fixture
+def db_settings(database_url):
+    return Settings(_env_file=None, api_key="k", env="demo", database_url=database_url)
+
+
+def test_changes_are_measured_against_the_previous_days_set_time_baseline(db_settings):
+    from datetime import date
+
+    from t212_mcp.lookthrough.store import Store
+
+    store = Store(db_settings.database_url)
+    london = ZoneInfo("Europe/London")
+    for day, total in ((date(2026, 10, 5), 1000.0), (date(2026, 10, 6), 1100.0)):
+        store.save_baseline(env="demo", day=day, taken_at=datetime(day.year, day.month, day.day, 7, tzinfo=london),
+                            portfolio={**PREVIOUS, "total_value": total}, exposure={"all_securities": [], "day": str(day)})
+    # a manual digest later on the 6th saved only its own snapshot, not a baseline
+    snapshots.save(db_settings.database_url, digest.snapshot_key("demo"), {**PREVIOUS, "taken_at": "2026-10-06T17:00:00+00:00"})
+
+    later_today = datetime(2026, 10, 6, 18, 0, tzinfo=london)
+    portfolio, exposure = digest.comparison_point(store, db_settings, later_today)
+    assert portfolio["total_value"] == 1000.0 and exposure["day"] == "2026-10-05"  # the 5th's 07:00, not today's runs
+    next_morning = datetime(2026, 10, 7, 7, 0, tzinfo=london)
+    assert digest.comparison_point(store, db_settings, next_morning)[0]["total_value"] == 1100.0
+
+
+def test_without_baselines_the_last_earlier_day_snapshot_is_used(db_settings):
+    from t212_mcp.lookthrough.store import Store
+
+    store = Store(db_settings.database_url)
+    key = digest.snapshot_key("demo")
+    snapshots.save(db_settings.database_url, key, {**PREVIOUS, "taken_at": "2026-10-05T17:50:00+00:00", "total_value": 900.0})
+    snapshots.save(db_settings.database_url, key, {**PREVIOUS, "taken_at": "2026-10-06T08:00:00+00:00", "total_value": 950.0})
+    portfolio, exposure = digest.comparison_point(store, db_settings, datetime(2026, 10, 6, 12, 0, tzinfo=ZoneInfo("Europe/London")))
+    assert portfolio["total_value"] == 900.0 and exposure is None  # today's snapshot is not a comparison point
+
+
+async def test_only_the_set_time_run_saves_a_baseline(db_settings, monkeypatch):
+    from t212_mcp.lookthrough.store import Store
+
+    async def fake_build(settings):
+        return digest.Digest(subject="s", html="<p>", images={}, snapshot={**PREVIOUS, "taken_at": "2026-10-07T06:00:00+00:00"},
+                             exposure={"all_securities": []})
+
+    async def fake_send(*a):
+        return "em"
+
+    settings = db_settings.model_copy(update={"resend_api_key": "re_x", "digest_to": "me@example.com"})
+    monkeypatch.setattr(digest, "build", fake_build)
+    monkeypatch.setattr(digest, "send_email", fake_send)
+    store = Store(settings.database_url)
+    monkeypatch.setattr(digest, "is_local_hour", lambda h, tz, now=None: False)
+    await digest.run(settings)
+    assert store.latest_baseline("demo", before=datetime(2100, 1, 1).date()) is None
+    monkeypatch.setattr(digest, "is_local_hour", lambda h, tz, now=None: True)
+    await digest.run(settings)
+    assert store.latest_baseline("demo", before=datetime(2100, 1, 1).date())["portfolio"]["taken_at"] == "2026-10-07T06:00:00+00:00"

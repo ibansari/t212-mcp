@@ -25,8 +25,6 @@ log = logging.getLogger("t212_mcp.digest")
 CHART_CID = "holdings-chart"
 EXPOSURE_CID = "lookthrough-chart"
 GAIN, LOSS = "#2a78d6", "#e34948"  # diverging blue/red, validated for colour-vision deficiency on white
-# One-series magnitude chart. Not blue: blue means "gain" in the change chart above it. Validated against both.
-EXPOSURE = "#4a3aa7"
 INK, INK_MUTED, GRID = "#0b0b0b", "#52514e", "#e7e6e2"
 CURRENCY = {"GBP": "£", "USD": "$", "EUR": "€"}
 NEWS_URL = "https://news.google.com/rss/search?q={q}+when:1d&hl=en-GB&gl=GB&ceid=GB:en"
@@ -104,15 +102,18 @@ def exposure_rows(exposure: dict, previous: dict | None, top_n: int = 15) -> lis
     def key(r: dict) -> str:
         return r.get("isin") or r["name"].lower()
 
-    before = {key(r): r["pct_of_portfolio"] for r in (previous or {}).get("all_securities", [])}
+    before = {key(r): r for r in (previous or {}).get("all_securities", [])}
     rows = []
     for r in exposure["all_securities"][:top_n]:
         funds = [_fund_symbol(t) for t in r["via_funds"]]
         held = (["Direct"] if r["direct"] else []) + funds[:3] + ([f"+{len(funds) - 3}"] if len(funds) > 3 else [])
         if len(r.get("members", [])) > 1:
             held.append(f"{len(r['members'])} share lines")
+        prev = before.get(key(r))
+        change = round(r["value"] - prev["value"], 2) if prev else None
         rows.append({"name": r["name"], "isin": r.get("isin"), "value": r["value"], "pct": r["pct_of_portfolio"],
-                     "change_pp": round(r["pct_of_portfolio"] - before[key(r)], 2) if key(r) in before else None,
+                     "change": change,
+                     "change_pct": round((r["value"] / prev["value"] - 1) * 100, 2) if prev and prev["value"] else None,
                      "held": ", ".join(held) if held else "–"})
     return rows
 
@@ -240,39 +241,6 @@ def render_chart(rows: list[dict], max_bars: int = 25) -> bytes | None:
     return buf.getvalue()
 
 
-def render_exposure_chart(rows: list[dict]) -> bytes | None:
-    """Horizontal bars of each underlying holding's share of the portfolio, largest at the top."""
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    if not rows:
-        return None
-    data = list(reversed(rows[:10]))  # the table below lists more
-    labels = [r["name"] if len(r["name"]) <= 28 else r["name"][:27] + "…" for r in data]
-    values = [r["pct"] for r in data]
-    fig, ax = plt.subplots(figsize=(7, 0.34 * len(data) + 0.9), dpi=200)
-    ax.barh(range(len(data)), values, height=0.6, color=EXPOSURE)
-    top = max(values) or 1.0
-    for i, v in enumerate(values):
-        ax.text(v + top * 0.015, i, f"{v:.1f}%", va="center", ha="left", fontsize=8, color=INK)
-    ax.set_yticks(range(len(data)), labels, fontsize=8, color=INK)
-    ax.set_xlim(0, top * 1.15)
-    ax.xaxis.set_major_formatter(lambda x, _: f"{x:.0f}%")
-    ax.tick_params(axis="x", labelsize=7, colors=INK_MUTED, length=0)
-    ax.tick_params(axis="y", length=0)
-    ax.grid(axis="x", color=GRID, linewidth=0.6)
-    ax.set_axisbelow(True)
-    for spine in ax.spines.values():
-        spine.set_visible(False)
-    fig.tight_layout()
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", facecolor="white")
-    plt.close(fig)
-    return buf.getvalue()
-
-
 # ---------------------------------------------------------------- email
 
 
@@ -287,10 +255,6 @@ def _pct(v: float | None) -> str:
     return "–" if v is None else f"{'+' if v > 0 else '−' if v < 0 else ''}{abs(v):.2f}%"
 
 
-def _pp(v: float | None) -> str:
-    return "–" if v is None else f"{'+' if v > 0 else '−' if v < 0 else ''}{abs(v):.2f} pp"
-
-
 def render_look_through(exposure: dict | None, rows: list[dict], has_chart: bool, sym: str, cell: str, num: str) -> str:
     if not exposure or not rows:
         return ""
@@ -303,18 +267,19 @@ def render_look_through(exposure: dict | None, rows: list[dict], has_chart: bool
             + (f"; older data for {', '.join(_fund_symbol(t) for t in stale)}" if stale else "") + ".")
     countries = " · ".join(f"{html.escape(c['name'])} {c['pct']:.0f}%" for c in exposure["countries"][:5])
     head = "".join(f"<th style='{cell}text-align:{a};color:{INK_MUTED};font-weight:600'>{h}</th>" for h, a in (
-        ("Company", "left"), ("Value", "right"), ("Share", "right"), ("Change", "right"), ("Held via", "left")))
+        ("Company", "left"), ("Value", "right"), ("Change", "right"), ("Change %", "right"), ("Share", "right")))
     body = "".join(
-        f"<tr><td style='{cell}'>{html.escape(r['name'])}</td><td style='{num}'>{_money(r['value'], sym)}</td>"
-        f"<td style='{num}'>{r['pct']:.1f}%</td><td style='{num}'>{_pp(r['change_pp'])}</td>"
-        f"<td style='{cell}color:{INK_MUTED};font-size:12px'>{html.escape(r['held'])}</td></tr>" for r in rows)
-    chart = (f"<img src='cid:{EXPOSURE_CID}' alt='Bar chart of your largest underlying holdings by share of portfolio' "
-             f"style='width:100%;max-width:640px;height:auto'>" if has_chart else "")
-    return f"""<h2 style="font-size:16px;margin:24px 0 4px">What you really own</h2>
+        f"<tr><td style='{cell}'>{html.escape(r['name'])}<div style='color:{INK_MUTED};font-size:11px'>"
+        f"{html.escape(r['held'])}</div></td><td style='{num}'>{_money(r['value'], sym)}</td>"
+        f"<td style='{num}'>{_money(r['change'], sym, signed=True)}</td><td style='{num}'>{_pct(r['change_pct'])}</td>"
+        f"<td style='{num}'>{r['pct']:.1f}%</td></tr>" for r in rows)
+    chart = (f"<img src='cid:{EXPOSURE_CID}' alt='Bar chart of how each of your largest underlying holdings changed "
+             f"since the last digest' style='width:100%;max-width:640px;height:auto'>" if has_chart else "")
+    return f"""<h2 style="font-size:16px;margin:20px 0 4px">What you really own</h2>
 <p style="color:{INK_MUTED};font-size:12px;margin:0 0 8px">{note}</p>
 {chart}
 <table style="width:100%;border-collapse:collapse;margin-top:8px"><tr>{head}</tr>{body}</table>
-<p style="color:{INK_MUTED};font-size:12px;margin:8px 0 0">Top countries: {countries}. Change is in percentage points of your portfolio since the last digest.</p>"""
+<p style="color:{INK_MUTED};font-size:12px;margin:8px 0 0">Top countries: {countries}.</p>"""
 
 
 def render_html(summary: dict, rows: list[dict], news: list[dict], previous: dict | None, has_chart: bool,
@@ -361,6 +326,19 @@ def render_html(summary: dict, rows: list[dict], news: list[dict], previous: dic
     news_section = "".join(news_html) or f"<p style='color:{INK_MUTED};font-size:13px'>No headlines in the last 24 hours.</p>"
     chart = (f"<img src='cid:{CHART_CID}' alt='Bar chart of each holding’s change since the last digest' "
              f"style='width:100%;max-width:640px;height:auto'>" if has_chart else "")
+    news_block = f"<h2 style='font-size:16px;margin:24px 0 0'>News for your largest holdings</h2>{news_section}"
+    positions_table = f"<table style='width:100%;border-collapse:collapse;margin-top:8px'><tr>{head}</tr>{''.join(table_rows)}</table>"
+    position_note = ("Position change = price move since the last digest applied to the shares you hold now, in "
+                     "account currency (includes FX).")
+    look_through = render_look_through(exposure, exp_rows or [], has_exposure_chart, sym, cell, num)
+    if look_through:  # companies first; your ETFs and stocks as a compact table at the end
+        body_sections = (f"{look_through}{news_block}<h2 style='font-size:16px;margin:24px 0 8px'>Your positions</h2>"
+                         f"{positions_table}")
+        footnote = ("Company change = change in the value you hold since the last digest, including trades and "
+                    "fund rebalancing. " + position_note)
+    else:
+        body_sections = f"<h2 style='font-size:16px;margin:20px 0 8px'>Change by holding</h2>{chart}{positions_table}{news_block}"
+        footnote = position_note
 
     return f"""<!doctype html><html><body style="margin:0;background:#ffffff;color:{INK};font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
 <div style="max-width:680px;margin:0 auto;padding:20px 16px">
@@ -368,13 +346,8 @@ def render_html(summary: dict, rows: list[dict], news: list[dict], previous: dic
 <h1 style="font-size:26px;margin:4px 0">{_money(total, sym)}</h1>
 <p style="font-size:14px;margin:0 0 4px">{headline}</p>
 <p style="color:{INK_MUTED};font-size:12px;margin:0 0 16px">Invested {_money(inv['current_value'], sym)} · unrealised P&amp;L {_money(inv['unrealized_pnl'], sym, signed=True)} · cash {_money(summary['cash']['available_to_trade'], sym)}</p>
-<h2 style="font-size:16px;margin:20px 0 8px">Change by holding</h2>
-{chart}
-<table style="width:100%;border-collapse:collapse;margin-top:8px"><tr>{head}</tr>{''.join(table_rows)}</table>
-{render_look_through(exposure, exp_rows or [], has_exposure_chart, sym, cell, num)}
-<h2 style="font-size:16px;margin:24px 0 0">News for your largest holdings</h2>
-{news_section}
-<p style="color:{INK_MUTED};font-size:11px;margin-top:28px">Change = price move since the last digest applied to the shares you hold now, in account currency (includes FX). Headlines from Google News, last 24 hours. Not investment advice.</p>
+{body_sections}
+<p style="color:{INK_MUTED};font-size:11px;margin-top:28px">{footnote} Headlines from Google News, last 24 hours. Not investment advice.</p>
 </div></body></html>"""
 
 
@@ -416,20 +389,33 @@ class Digest:
     exposure: dict | None
 
 
-async def build(settings: Settings, tz: str = "Europe/London") -> Digest:
+def comparison_point(store, settings: Settings, now: datetime) -> tuple[dict | None, dict | None]:
+    """(portfolio, look-through) to measure changes against: the most recent set-time baseline from an earlier
+    day. Before any baseline exists, fall back to the last digest snapshot and refresh look-through from an
+    earlier day."""
+    today = now.date()
+    if base := store.latest_baseline(settings.env, before=today):
+        return base["portfolio"], base["exposure"]
+    midnight = datetime.combine(today, datetime.min.time(), tzinfo=now.tzinfo)
+    return (snapshots.load_latest(settings.database_url, snapshot_key(settings.env), before=midnight),
+            previous_exposure(store, today.isoformat()))
+
+
+async def build(settings: Settings) -> Digest:
     from .lookthrough.store import Store
     from .server import _fetch_positions, _fetch_summary
 
     summary, positions = await asyncio.gather(_fetch_summary(), _fetch_positions())
-    previous = snapshots.load_latest(settings.database_url, snapshot_key(settings.env))
-    rows = holding_rows(positions, previous)
-    now = datetime.now(ZoneInfo(tz))
+    now = datetime.now(ZoneInfo(settings.digest_tz))
     store = Store(settings.database_url)
+    previous, previous_exp = comparison_point(store, settings, now)
+    rows = holding_rows(positions, previous)
     exposure = look_through(store, positions)
-    exp_rows = exposure_rows(exposure, previous_exposure(store, now.date().isoformat())) if exposure else []
+    exp_rows = exposure_rows(exposure, previous_exp) if exposure else []
     news = await fetch_news(news_targets(positions, exposure))
-    images = {cid: png for cid, png in ((CHART_CID, render_chart(rows)),
-                                        (EXPOSURE_CID, render_exposure_chart(exp_rows))) if png}
+    # With look-through data the chart shows companies; otherwise it shows positions.
+    images = ({EXPOSURE_CID: png} if exp_rows and (png := render_chart(exp_rows)) else
+              {CHART_CID: png} if not exp_rows and (png := render_chart(rows)) else {})
     return Digest(subject=subject_line(summary, previous, now),
                   html=render_html(summary, rows, news, previous, CHART_CID in images, now, exposure, exp_rows,
                                    EXPOSURE_CID in images),
@@ -437,7 +423,8 @@ async def build(settings: Settings, tz: str = "Europe/London") -> Digest:
 
 
 async def run(settings: Settings, preview: Path | None = None) -> str:
-    """Send the digest (or write a local preview). The baseline only advances after a successful send."""
+    """Send the digest (or write a local preview). After a successful send at the set hour, today's baseline is
+    saved; runs at other times compare against the baselines but never move them."""
     digest = await build(settings)
     if preview is not None:
         body = digest.html
@@ -453,8 +440,10 @@ async def run(settings: Settings, preview: Path | None = None) -> str:
         raise RuntimeError(f"set {', '.join(missing)} to send the digest")
     email_id = await send_email(settings, digest.subject, digest.html, digest.images)
     snapshots.save(settings.database_url, snapshot_key(settings.env), digest.snapshot)
-    if digest.exposure:  # today's look-through, so the next digest can show how it shifted
+    if is_local_hour(settings.digest_hour, settings.digest_tz):
         from .lookthrough.store import Store
 
-        Store(settings.database_url).save_exposure({**digest.exposure, "as_of": datetime.now(timezone.utc).date().isoformat()})
+        now = datetime.now(ZoneInfo(settings.digest_tz))
+        Store(settings.database_url).save_baseline(env=settings.env, day=now.date(), taken_at=now,
+                                                   portfolio=digest.snapshot, exposure=digest.exposure)
     return f"Sent '{digest.subject}' (Resend id {email_id})"

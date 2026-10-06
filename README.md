@@ -156,8 +156,8 @@ uv run t212-mcp send-digest                         # send now
 
 **On Railway** a separate `digest` service runs it, from the same repo and image. Its start command is `t212-mcp send-digest --only-at-local-hour 7 --tz Europe/London` and its cron schedule is `0 6,7 * * 1-5`; both are set in the service settings.
 - It's scheduled for 06:00 and 07:00 UTC on weekdays, and `--only-at-local-hour 7` sends only when it's 07:00 in London. That keeps the email at 07:00 UK time on both sides of the clock change.
-- Each digest is compared with the previous digest's snapshot, which is stored separately from `get_portfolio_update`'s.
-- That snapshot is saved only after the email sends, so a failed send doesn't skip a day.
+- Changes are measured against a fixed daily point. The run at the set time (`T212_DIGEST_HOUR`, default 7, in `T212_DIGEST_TZ`, default Europe/London) saves a baseline of your portfolio and look-through. Every email compares with the previous day's baseline, so the 07:00 email shows a clean day-on-day change and manual runs never move the comparison point.
+- The baseline is saved only after the email sends. If a set-time run is missed, the next email compares with the last baseline available, and its header says which.
 
 ### Railway service settings
 

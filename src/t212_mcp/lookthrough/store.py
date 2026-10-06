@@ -120,6 +120,21 @@ class Store:
             out.append({k: v for k, v in d.items() if v is not None})
         return out
 
+    # ---- digest baselines
+    def save_baseline(self, *, env: str, day: date, taken_at: datetime, portfolio: dict, exposure: dict | None) -> None:
+        with self.sessions.begin() as s:
+            row = s.scalars(select(m.DigestBaseline).where(m.DigestBaseline.env == env, m.DigestBaseline.day == day)).first()
+            row = row or m.DigestBaseline(env=env, day=day)
+            row.taken_at, row.portfolio, row.exposure = taken_at, portfolio, exposure
+            s.add(row)
+
+    def latest_baseline(self, env: str, before: date) -> dict | None:
+        """The most recent baseline from a day before `before`."""
+        with self.sessions() as s:
+            row = s.scalars(select(m.DigestBaseline).where(m.DigestBaseline.env == env, m.DigestBaseline.day < before)
+                            .order_by(m.DigestBaseline.day.desc()).limit(1)).first()
+            return {"day": row.day, "portfolio": row.portfolio, "exposure": row.exposure} if row else None
+
     # ---- security entities
     ENTITY_FIELDS = ("entity_key", "name", "figi_name", "ticker", "exch_code", "security_type", "method", "reason")
 

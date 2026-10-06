@@ -24,12 +24,12 @@ def make_snapshot(summary: dict, positions: list[dict]) -> dict:
     }
 
 
-def load_latest(database_url: str, env: str) -> dict | None:
+def load_latest(database_url: str, env: str, before: datetime | None = None) -> dict | None:
     with db.sessions(database_url)() as s:
-        snap = s.scalars(
-            select(m.PortfolioSnapshot).where(m.PortfolioSnapshot.env == env)
-            .order_by(m.PortfolioSnapshot.taken_at.desc(), m.PortfolioSnapshot.id.desc()).limit(1)
-        ).first()
+        q = select(m.PortfolioSnapshot).where(m.PortfolioSnapshot.env == env)
+        if before is not None:
+            q = q.where(m.PortfolioSnapshot.taken_at < before)
+        snap = s.scalars(q.order_by(m.PortfolioSnapshot.taken_at.desc(), m.PortfolioSnapshot.id.desc()).limit(1)).first()
         if snap is None:
             return None
         return {

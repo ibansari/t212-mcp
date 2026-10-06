@@ -374,6 +374,8 @@ Read from the environment or `.env`. All names have the `T212_` prefix except `O
 | `PORT` | `8765` | HTTP port (set by Railway) |
 | `T212_RESEND_API_KEY` | none | Resend API key for `send-digest` |
 | `T212_DIGEST_TO` | none | Digest recipient(s), comma-separated |
+| `T212_DIGEST_HOUR` | `7` | Local hour whose digest run saves the daily baseline that changes are measured against |
+| `T212_DIGEST_TZ` | `Europe/London` | Time zone for `T212_DIGEST_HOUR` |
 | `T212_DIGEST_FROM` | `Portfolio digest <onboarding@resend.dev>` | Digest sender; use an address on a domain verified in Resend |
 | `OPENAI_API_KEY` | none | For the discovery agent |
 | `T212_LLM_MODEL` | `gpt-6.1-sol` | OpenAI model |
