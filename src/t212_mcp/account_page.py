@@ -69,6 +69,12 @@ def _same_origin(settings: Settings, request: Request) -> bool:
 
 # ---------------------------------------------------------------- page
 
+
+def _when(iso: str | None) -> str:
+    from datetime import datetime
+
+    return datetime.fromisoformat(iso).strftime("%-d %b %Y, %H:%M UTC") if iso else "recently"
+
 INK, MUTED, ACCENT, ERR = "#0b0b0b", "#52514e", "#2a78d6", "#b42318"
 
 
@@ -102,7 +108,7 @@ def render(settings: Settings, user: accounts.User | None, message: str = "", er
     if owner_key:
         status = "<p class='ok'>Connected (server owner, using the server's key).</p>"
     elif conn:
-        status = (f"<p class='ok'>Connected: {e(conn['env'])} account, key checked {e(conn['verified_at'] or '')}.</p>"
+        status = (f"<p class='ok'>Connected: {e(conn['env'])} account, key checked {e(_when(conn['verified_at']))}.</p>"
                   "<form method='post' action='/account/disconnect'><button class='secondary'>Disconnect</button></form>")
     else:
         status = "<p>No Trading 212 account connected yet.</p>"
@@ -124,8 +130,8 @@ and never shown again.</p>
 (snapshots, look-through history). Shared fund data stays.</p>
 <form method='post' action='/account/delete' onsubmit="return confirm('Delete your key and history?')">
 <button class='danger'>Delete my data</button></form>"""
-    who = (f"<p class='muted'>Signed in as <b>{e(user.email or user.id)}</b> · <form method='post' action='/account/logout' "
-           "style='display:inline'><button class='secondary' style='margin:0;padding:3px 8px'>Sign out</button></form></p>")
+    who = (f"<form method='post' action='/account/logout' class='muted' style='margin:0 0 8px'>Signed in as "
+           f"<b>{e(user.email or user.id)}</b> · <button class='secondary' style='margin:0;padding:3px 8px'>Sign out</button></form>")
     return _page(intro + who + notice + f"<div class='card'>{status}{form}</div>" + howto + danger)
 
 
