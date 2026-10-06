@@ -1,13 +1,19 @@
 """FastMCP server exposing a read-only view of a Trading 212 portfolio."""
 
 import argparse
+import asyncio
 import hmac
+import logging
+import os
+from datetime import datetime, timezone
 from typing import Literal
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.server.auth.providers.debug import DebugTokenVerifier
 from pydantic import ValidationError
+from starlette.requests import Request
+from starlette.responses import PlainTextResponse
 
 from . import snapshots
 from .client import T212Client
@@ -306,21 +312,55 @@ async def get_holdings_status() -> dict:
         )
     return {
         "llm_model": settings.llm_model,
+        "refresh": dict(_refresh),
         "funds": funds,
         "recipes": len(recipes),
         "recent_agent_runs": store.runs(limit=10),
     }
 
 
-@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True})
-async def refresh_etf_holdings(allow_agent: bool = False) -> dict:
-    """Refresh look-through holdings now. Funds with a working recipe are re-downloaded (fast, no LLM).
-    With allow_agent=True, funds without a working recipe are researched by the discovery agent, which can take
-    several minutes and uses the configured LLM."""
+# The current/last background refresh. A refresh can take minutes, longer than proxies in front of the HTTP
+# server allow for one request, so the tool starts it and get_holdings_status reports on it.
+_refresh: dict = {"state": "idle"}
+_refresh_task: asyncio.Task | None = None
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+async def _run_refresh(settings: Settings, allow_agent: bool) -> None:
     from .lookthrough.graph import refresh
 
-    exp = await refresh(client().settings, allow_agent=allow_agent)
-    return {"as_of": exp["as_of"], "results": exp["refresh_results"], "coverage": exp["coverage"]}
+    try:
+        exp = await refresh(settings, allow_agent=allow_agent)
+        _refresh.update(state="done", finished_at=_now(), as_of=exp["as_of"], results=exp["refresh_results"],
+                        funds_with_data_pct=exp["coverage"]["funds_with_data_pct"])
+    except Exception as e:
+        logging.getLogger("t212_mcp").exception("look-through refresh failed")
+        _refresh.update(state="failed", finished_at=_now(), error=f"{type(e).__name__}: {e}")
+
+
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True})
+async def refresh_etf_holdings(allow_agent: bool = False) -> dict:
+    """Start a look-through refresh in the background and return immediately; it does not wait for the result.
+    Funds with a working recipe are re-downloaded (fast, no LLM). With allow_agent=True, funds without a working
+    recipe are researched by the discovery agent, which can take several minutes and uses the configured LLM.
+    Call get_holdings_status to follow progress (its `refresh` field) and see per-fund results."""
+    global _refresh_task
+    if _refresh_task is not None and not _refresh_task.done():
+        return {"started": False, "reason": "a refresh is already running", **_refresh}
+    settings = client().settings
+    _refresh.clear()
+    _refresh.update(state="running", allow_agent=allow_agent, started_at=_now())
+    _refresh_task = asyncio.create_task(_run_refresh(settings, allow_agent))
+    return {"started": True, **_refresh}
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health(request: Request) -> PlainTextResponse:
+    """Liveness check for load balancers; needs no token."""
+    return PlainTextResponse("ok")
 
 
 @mcp.resource("portfolio://summary", mime_type="application/json")
@@ -350,7 +390,7 @@ def main() -> None:
                         choices=["serve", "refresh-holdings", "install-schedule", "uninstall-schedule"])
     parser.add_argument("--http", action="store_true", help="serve over streamable HTTP instead of stdio")
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8765)))
     parser.add_argument("--allow-agent", action="store_true", help="let the LLM agent research funds without a working recipe")
     parser.add_argument("--at", default="07:30", help="install-schedule: daily time HH:MM")
     args = parser.parse_args()

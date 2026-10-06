@@ -12,17 +12,18 @@ WORKDIR /app
 
 # Dependencies first, so code changes don't reinstall them.
 COPY pyproject.toml uv.lock ./
-RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev --no-install-project
+RUN uv sync --frozen --no-dev --no-install-project
 
 # Headless Chromium for browser_json recipes and the discovery agent.
 RUN playwright install --with-deps chromium && rm -rf /var/lib/apt/lists/*
 
 COPY README.md ./
 COPY src ./src
-RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev
 
 RUN useradd --create-home app
 USER app
 
 EXPOSE 8765
-CMD ["t212-mcp", "--http", "--host", "0.0.0.0", "--port", "8765"]
+# Listens on $PORT when the platform sets it (Railway does), else 8765.
+CMD ["t212-mcp", "--http", "--host", "0.0.0.0"]

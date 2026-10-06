@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -23,6 +23,15 @@ class DatabaseSettings(BaseSettings):
     )
 
     database_url: str = DEFAULT_DATABASE_URL
+
+    @field_validator("database_url")
+    @classmethod
+    def _use_psycopg(cls, url: str) -> str:
+        """Hosted Postgres (Railway, Neon, ...) hands out postgres:// URLs; SQLAlchemy needs the psycopg driver named."""
+        for prefix in ("postgres://", "postgresql://"):
+            if url.startswith(prefix):
+                return "postgresql+psycopg://" + url[len(prefix):]
+        return url
 
 
 class Settings(DatabaseSettings):

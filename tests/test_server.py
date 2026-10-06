@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import time
 
@@ -139,3 +140,42 @@ async def test_bearer_auth_accepts_only_the_configured_token():
     verifier = server.bearer_auth("s3cret")
     assert await verifier.verify_token("s3cret") is not None
     assert await verifier.verify_token("wrong") is None
+
+
+async def test_refresh_runs_in_background_and_reports_status(settings, monkeypatch):
+    from t212_mcp.lookthrough import graph
+
+    gate = asyncio.Event()
+
+    async def fake_refresh(s, allow_agent=False):
+        await gate.wait()
+        return {"as_of": "2026-10-05", "refresh_results": [{"ticker": "HIES", "status": "ok"}],
+                "coverage": {"funds_with_data_pct": 100.0}}
+
+    monkeypatch.setattr(graph, "refresh", fake_refresh)
+    monkeypatch.setattr(server, "_refresh", {"state": "idle"})
+    monkeypatch.setattr(server, "_refresh_task", None)
+    async with Client(server.mcp) as c:
+        started = (await c.call_tool("refresh_etf_holdings", {})).data
+        again = (await c.call_tool("refresh_etf_holdings", {})).data
+        assert started["started"] and started["state"] == "running"
+        assert again["started"] is False
+        gate.set()
+        await server._refresh_task
+        status = (await c.call_tool("get_holdings_status", {})).data
+    assert status["refresh"]["state"] == "done" and status["refresh"]["results"][0]["ticker"] == "HIES"
+
+
+async def test_health_endpoint_needs_no_token(monkeypatch):
+    monkeypatch.setattr(server.mcp, "auth", server.bearer_auth("s3cret"))
+    app = server.mcp.http_app()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as c:
+        assert (await c.get("/health")).text == "ok"
+        assert (await c.post("/mcp", json={})).status_code == 401
+
+
+def test_hosted_postgres_urls_use_psycopg():
+    s = Settings(_env_file=None, api_key="k", database_url="postgres://u:p@host:5432/db")
+    assert s.database_url == "postgresql+psycopg://u:p@host:5432/db"
+    s = Settings(_env_file=None, api_key="k", database_url="postgresql://u:p@host/db")
+    assert s.database_url == "postgresql+psycopg://u:p@host/db"
