@@ -2,7 +2,7 @@
 
 The server speaks the [Model Context Protocol](https://modelcontextprotocol.io). It exposes 11 tools, 1 resource and 1 prompt.
 
-- **HTTP:** `POST http://127.0.0.1:8765/mcp` (streamable HTTP). When `T212_MCP_AUTH_TOKEN` is set, every request needs `Authorization: Bearer <token>`; otherwise the server returns `401`.
+- **HTTP:** `POST <host>/mcp` (streamable HTTP). Requests are authenticated by Google sign-in (OAuth 2.1, limited to `T212_ALLOWED_EMAILS`) or by a static `Authorization: Bearer <token>` (`T212_MCP_AUTH_TOKEN`). Requests without valid credentials get `401`. `GET /health` returns `ok` and needs no authentication.
 - **stdio:** `t212-mcp` with no arguments.
 
 Money is in the account currency unless a field names a currency. Percentages are 0–100. Timestamps are ISO 8601.
@@ -21,7 +21,7 @@ Errors come back as MCP tool errors (`isError: true`) with a readable message. S
 | [`get_etf_exposure`](#get_etf_exposure) | No | Look-through exposure |
 | [`get_exposure_changes`](#get_exposure_changes) | No | How exposure shifted over time |
 | [`get_holdings_status`](#get_holdings_status) | No | Look-through pipeline health |
-| [`refresh_etf_holdings`](#refresh_etf_holdings) | Yes | Re-download fund holdings, optionally with the agent |
+| [`refresh_etf_holdings`](#refresh_etf_holdings) | Yes | Start a background refresh of fund holdings, optionally with the agent |
 
 None of the tools can place, change or cancel orders.
 
@@ -250,15 +250,31 @@ Health of the look-through pipeline.
 | Field | Type | Description |
 |---|---|---|
 | `llm_model` | string | Configured OpenAI model |
+| `refresh` | object | The current or last background refresh; see below |
 | `funds` | object[] | One per fund ever refreshed; see below |
 | `recipes` | int | Number of active recipes |
 | `recent_agent_runs` | object[] | Last 10 agent events: `{at, event, isin, model, recipe_id, tokens, attempts, error}`, with empty fields left out |
 
 Each fund: `{isin, status, checked_at, holdings_as_of, holdings_count, recipe, error}`, where `recipe` is `{id, kind, scope, issuer, discovered_by}` or `null`.
 
+`refresh`:
+
+| Field | Description |
+|---|---|
+| `state` | `idle` (none since the server started), `running`, `done` or `failed` |
+| `allow_agent`, `started_at`, `finished_at` | |
+| `as_of` | When `done`: date of the new exposure snapshot |
+| `results` | When `done`: `{ticker, isin, status, detail, tokens}[]`, one per fund. `status` is `ok`, `stale` (refresh failed, older holdings kept) or `unresolved`; `detail` explains why |
+| `funds_with_data_pct` | When `done` |
+| `error` | When `failed` |
+
+Refresh status is kept in memory, so a server restart resets it to `idle`. Saved holdings and exposure are kept.
+
 ### `refresh_etf_holdings`
 
-Re-downloads holdings for every ETF you hold, then saves a new exposure snapshot for today (replacing any earlier one from the same day).
+Starts a background refresh and returns at once. The refresh re-downloads holdings for every ETF you hold, then saves a new exposure snapshot for today, replacing any earlier one from the same day. Follow it with [`get_holdings_status`](#get_holdings_status), using its `refresh` field.
+
+It runs in the background because an agent refresh can take minutes, longer than hosting proxies allow for a single request.
 
 Annotations: `readOnlyHint: false`, `destructiveHint: false`, `openWorldHint: true`.
 
@@ -270,13 +286,9 @@ Annotations: `readOnlyHint: false`, `destructiveHint: false`, `openWorldHint: tr
 
 Without `allow_agent`, only saved recipes are used and no LLM is called. Funds run 4 at a time, or one at a time with the agent, so a recipe learned for one fund can be reused by the issuer's other funds.
 
-**Returns**
-
-| Field | Type | Description |
-|---|---|---|
-| `as_of` | string | Date of the new exposure snapshot |
-| `results` | `{ticker, isin, status, detail, tokens}[]` | One per fund. `status` is `ok`, `stale` (refresh failed, older holdings kept) or `unresolved`; `detail` explains why |
-| `coverage` | object | As in [`get_etf_exposure`](#get_etf_exposure) |
+**Returns** `{started, state, allow_agent, started_at}`.
+- `started: true` with `state: "running"` when a refresh was started.
+- `started: false` with a `reason` when one is already running. Only one refresh runs at a time.
 
 ---
 
@@ -336,7 +348,12 @@ Read from the environment or `.env`. All names have the `T212_` prefix except `O
 | `T212_API_SECRET` | none | API secret (older keys work without one) |
 | `T212_ENV` | `live` | `live` or `demo` |
 | `T212_DATABASE_URL` | `postgresql+psycopg://t212:t212@localhost:5432/t212` | Postgres connection |
-| `T212_MCP_AUTH_TOKEN` | none | Bearer token for HTTP |
+| `T212_GOOGLE_CLIENT_ID` | none | Google OAuth client ID; turns on Google sign-in |
+| `T212_GOOGLE_CLIENT_SECRET` | none | Google OAuth client secret |
+| `T212_ALLOWED_EMAILS` | none | Comma-separated Google accounts allowed in (required with Google sign-in) |
+| `T212_PUBLIC_URL` | `https://$RAILWAY_PUBLIC_DOMAIN` | The server's public base URL, used for OAuth redirects |
+| `T212_MCP_AUTH_TOKEN` | none | Static bearer token for HTTP (ignored when Google sign-in is configured) |
+| `PORT` | `8765` | HTTP port (set by Railway) |
 | `OPENAI_API_KEY` | none | For the discovery agent |
 | `T212_LLM_MODEL` | `gpt-6.1-sol` | OpenAI model |
 | `T212_REASONING_EFFORT` | `high` | Reasoning effort sent to OpenAI (empty for the model's default) |

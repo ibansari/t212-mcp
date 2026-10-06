@@ -2,7 +2,6 @@
 
 import argparse
 import asyncio
-import hmac
 import logging
 import os
 from datetime import datetime, timezone
@@ -10,7 +9,6 @@ from typing import Literal
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
-from fastmcp.server.auth.providers.debug import DebugTokenVerifier
 from pydantic import ValidationError
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
@@ -379,11 +377,6 @@ def daily_briefing() -> str:
     )
 
 
-def bearer_auth(token: str) -> DebugTokenVerifier:
-    """Accept exactly one static bearer token, compared in constant time."""
-    return DebugTokenVerifier(validate=lambda t: hmac.compare_digest(t.encode(), token.encode()), client_id="t212-mcp")
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="Trading 212 MCP server")
     parser.add_argument("command", nargs="?", default="serve",
@@ -419,11 +412,15 @@ def main() -> None:
 
         print(uninstall())
     elif args.http:
-        token = client().settings.mcp_auth_token
-        if token is not None:
-            mcp.auth = bearer_auth(token.get_secret_value())
-        elif args.host not in ("127.0.0.1", "localhost", "::1"):
-            parser.error("set T212_MCP_AUTH_TOKEN before serving HTTP on a non-local address")
+        from .auth import ConfigError, http_auth
+
+        try:
+            mcp.auth = http_auth(client().settings)
+        except ConfigError as e:
+            parser.error(str(e))
+        if mcp.auth is None and args.host not in ("127.0.0.1", "localhost", "::1"):
+            parser.error("set up Google sign-in (T212_GOOGLE_CLIENT_ID, ...) or T212_MCP_AUTH_TOKEN before serving "
+                         "HTTP on a non-local address")
         mcp.run(transport="http", host=args.host, port=args.port)
     else:
         mcp.run()

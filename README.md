@@ -26,7 +26,37 @@ uv run t212-mcp --http            # http://127.0.0.1:8765/mcp
 claude mcp add --transport http trading212-http http://127.0.0.1:8765/mcp --header "Authorization: Bearer $T212_MCP_AUTH_TOKEN"
 ```
 
-When `T212_MCP_AUTH_TOKEN` is set, every request needs `Authorization: Bearer <token>`. The server refuses to listen on a non-local address without a token.
+The server refuses to listen on a non-local address without one of these:
+
+- **Google sign-in** (recommended for anything public): only the Google accounts in `T212_ALLOWED_EMAILS` get in. See [Google sign-in](#google-sign-in).
+- **A static bearer token**: set `T212_MCP_AUTH_TOKEN`, and every request needs `Authorization: Bearer <token>`.
+
+Whichever you use, create the Trading 212 key with read scopes only. Then even a leaked credential can't place orders or move money.
+
+## Google sign-in
+
+1. In [Google Cloud Console](https://console.cloud.google.com/) open **Google Auth Platform**:
+   - Set up the consent screen as **External**.
+   - Leave it in **Testing** and add your Google account as a test user. Only test users can sign in at all.
+2. Under **Clients**, create a **Web application** client with this authorized redirect URI: `https://<your-domain>/auth/callback`.
+3. Set these variables:
+
+   | Variable | Value |
+   |---|---|
+   | `T212_GOOGLE_CLIENT_ID` | From step 2 |
+   | `T212_GOOGLE_CLIENT_SECRET` | From step 2 |
+   | `T212_ALLOWED_EMAILS` | Your Google address. Comma-separate several |
+   | `T212_PUBLIC_URL` | `https://<your-domain>`. Not needed on Railway, which supplies the domain |
+
+4. Connect Claude Code, then run `/mcp` → **Authenticate**. A browser opens: approve the consent page, then sign in with Google.
+
+   ```bash
+   claude mcp add --transport http trading212 https://<your-domain>/mcp
+   ```
+
+The server checks the Google account behind every request. Any other account gets `401`, even after signing in successfully. Sign-ins are stored encrypted in Postgres, so they survive redeploys.
+
+While the Google app stays in Testing, Google expires its refresh tokens after 7 days, so expect to sign in again weekly. You can publish the app to avoid that, because the `openid` and `email` scopes don't need Google's review. Publishing removes the test-user restriction, but the email allow-list still applies.
 
 ## Run with Docker Compose
 
@@ -68,7 +98,7 @@ Add to `claude_desktop_config.json`:
 | `get_etf_exposure` | Look-through exposure: each ETF broken into its holdings and combined with your direct stocks, grouped by security, country or sector |
 | `get_exposure_changes` | How look-through exposure shifted between the latest refresh and one `days` ago |
 | `get_holdings_status` | Per-fund look-through status (ok/stale/unresolved), recipe, holdings date and last error, plus recent agent runs |
-| `refresh_etf_holdings` | Re-downloads fund holdings now; with `allow_agent=true`, funds without a working recipe are researched by the LLM agent |
+| `refresh_etf_holdings` | Starts a background re-download of fund holdings; with `allow_agent=true`, funds without a working recipe are researched by the LLM agent. Follow progress with `get_holdings_status` |
 
 The server also provides the resource `portfolio://summary` and the prompt `daily_briefing`.
 

@@ -9,6 +9,7 @@ from fastmcp import Client
 from fastmcp.exceptions import ToolError
 
 from t212_mcp import server, snapshots
+from t212_mcp.auth import bearer_auth
 from t212_mcp.client import T212Client, auth_header
 from t212_mcp.config import Settings
 
@@ -137,7 +138,7 @@ async def test_portfolio_update_diffs_against_previous_snapshot(settings):
 
 
 async def test_bearer_auth_accepts_only_the_configured_token():
-    verifier = server.bearer_auth("s3cret")
+    verifier = bearer_auth("s3cret")
     assert await verifier.verify_token("s3cret") is not None
     assert await verifier.verify_token("wrong") is None
 
@@ -167,7 +168,7 @@ async def test_refresh_runs_in_background_and_reports_status(settings, monkeypat
 
 
 async def test_health_endpoint_needs_no_token(monkeypatch):
-    monkeypatch.setattr(server.mcp, "auth", server.bearer_auth("s3cret"))
+    monkeypatch.setattr(server.mcp, "auth", bearer_auth("s3cret"))
     app = server.mcp.http_app()
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as c:
         assert (await c.get("/health")).text == "ok"
