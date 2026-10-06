@@ -99,7 +99,7 @@ def test_chart_and_email_render():
 async def test_send_email_embeds_chart_inline():
     route = respx.post("https://api.resend.com/emails").respond(json={"id": "em_1"})
     s = Settings(_env_file=None, api_key="k", resend_api_key="re_x", digest_to="me@example.com, other@example.com")
-    assert await digest.send_email(s, "Subj", "<p>hi</p>", b"\x89PNG") == "em_1"
+    assert await digest.send_email(s, "Subj", "<p>hi</p>", {"holdings-chart": b"\x89PNG"}) == "em_1"
     body = __import__("json").loads(route.calls[0].request.content)
     assert body["to"] == ["me@example.com", "other@example.com"]
     assert body["attachments"][0]["content_id"] == "holdings-chart"
@@ -111,3 +111,36 @@ def test_only_sends_at_uk_hour_across_clock_change():
     winter = datetime(2026, 12, 7, 7, 0, tzinfo=timezone.utc)  # 07:00 GMT
     assert digest.is_local_hour(7, "Europe/London", summer) and not digest.is_local_hour(7, "Europe/London", summer + timedelta(hours=1))
     assert digest.is_local_hour(7, "Europe/London", winter) and not digest.is_local_hour(7, "Europe/London", winter - timedelta(hours=1))
+
+
+EXPOSURE = {
+    "all_securities": [
+        {"name": "Nvidia", "isin": "US67066G1040", "value": 1457.0, "pct_of_portfolio": 14.6, "direct": 1100.0,
+         "via_funds": {"GLBLl_EQ": 357.0}},
+        {"name": "Microsoft Corp", "isin": "US5949181045", "value": 378.0, "pct_of_portfolio": 3.8, "direct": 0.0,
+         "via_funds": {"GLBLl_EQ": 378.0}},
+    ],
+    "countries": [{"name": "United States", "value": 1835.0, "pct": 18.4}],
+    "coverage": {"funds_with_data_pct": 100.0, "funds": [
+        {"ticker": "GLBLl_EQ", "status": "ok", "as_of": "2026-10-05"},
+        {"ticker": "EMRGl_EQ", "status": "stale", "as_of": "2026-10-01"}]},
+}
+
+
+def test_exposure_rows_show_how_each_company_is_held_and_its_shift():
+    previous = {"all_securities": [{"name": "Nvidia", "isin": "US67066G1040", "pct_of_portfolio": 14.2}]}
+    rows = digest.exposure_rows(EXPOSURE, previous)
+    assert rows[0] == {"name": "Nvidia", "isin": "US67066G1040", "value": 1457.0, "pct": 14.6, "change_pp": 0.4,
+                       "held": "Direct, GLBL"}
+    assert rows[1]["held"] == "GLBL" and rows[1]["change_pp"] is None  # not in the previous digest
+
+
+def test_look_through_section_renders_with_coverage_and_stale_funds():
+    rows = digest.exposure_rows(EXPOSURE, None)
+    page = digest.render_html(SUMMARY, digest.holding_rows(POSITIONS, PREVIOUS), [], PREVIOUS, True, NOW,
+                              EXPOSURE, rows, True)
+    assert "What you really own" in page and "cid:lookthrough-chart" in page
+    assert "Covers 100% of your fund value" in page and "2026-10-01 to 2026-10-05" in page
+    assert "older data for EMRG" in page and "Direct, GLBL" in page and "United States 18%" in page
+    assert digest.render_exposure_chart(rows).startswith(b"\x89PNG")
+    assert "What you really own" not in digest.render_html(SUMMARY, [], [], None, False, NOW)  # no fund data: no section

@@ -23,7 +23,10 @@ from .config import Settings
 log = logging.getLogger("t212_mcp.digest")
 
 CHART_CID = "holdings-chart"
+EXPOSURE_CID = "lookthrough-chart"
 GAIN, LOSS = "#2a78d6", "#e34948"  # diverging blue/red, validated for colour-vision deficiency on white
+# One-series magnitude chart. Not blue: blue means "gain" in the change chart above it. Validated against both.
+EXPOSURE = "#4a3aa7"
 INK, INK_MUTED, GRID = "#0b0b0b", "#52514e", "#e7e6e2"
 CURRENCY = {"GBP": "£", "USD": "$", "EUR": "€"}
 NEWS_URL = "https://news.google.com/rss/search?q={q}+when:1d&hl=en-GB&gl=GB&ceid=GB:en"
@@ -63,6 +66,50 @@ def holding_rows(positions: list[dict], previous: dict | None) -> list[dict]:
             rows.append({"ticker": ticker, "name": before["name"], "value": 0.0, "weight_pct": None, "pnl_pct": None,
                          "change": None, "change_pct": None, "note": "closed"})
     rows.sort(key=lambda r: -r["value"])
+    return rows
+
+
+# ---------------------------------------------------------------- look-through
+
+
+def look_through(store, positions: list[dict]) -> dict | None:
+    """Exposure from current positions and each fund's latest stored holdings (computed now, so it reflects
+    today's positions rather than those at the last refresh). None when no held fund has look-through data."""
+    from .lookthrough.exposure import compute_exposure
+
+    records = {p["isin"]: store.load_fund(p["isin"]) for p in positions if p.get("isin")}
+    funds = {isin for isin, rec in records.items() if rec}
+    if not funds:
+        return None
+    holdings = {isin: store.last_good(isin) for isin in funds}
+    status = {isin: records[isin]["status"] for isin in funds}
+    return compute_exposure(positions, funds, holdings, status)
+
+
+def previous_exposure(store, before_day: str) -> dict | None:
+    earlier = [h for h in store.exposure_history() if h[0] < before_day]
+    return store.load_exposure(earlier[-1][1]) if earlier else None
+
+
+def _fund_symbol(t212_ticker: str) -> str:
+    from .server import symbol
+
+    return symbol(t212_ticker)
+
+
+def exposure_rows(exposure: dict, previous: dict | None, top_n: int = 15) -> list[dict]:
+    """The largest underlying holdings across funds and direct positions."""
+    def key(r: dict) -> str:
+        return r.get("isin") or r["name"].lower()
+
+    before = {key(r): r["pct_of_portfolio"] for r in (previous or {}).get("all_securities", [])}
+    rows = []
+    for r in exposure["all_securities"][:top_n]:
+        funds = [_fund_symbol(t) for t in r["via_funds"]]
+        held = (["Direct"] if r["direct"] else []) + funds[:3] + ([f"+{len(funds) - 3}"] if len(funds) > 3 else [])
+        rows.append({"name": r["name"], "isin": r.get("isin"), "value": r["value"], "pct": r["pct_of_portfolio"],
+                     "change_pp": round(r["pct_of_portfolio"] - before[key(r)], 2) if key(r) in before else None,
+                     "held": ", ".join(held) if held else "–"})
     return rows
 
 
@@ -189,6 +236,39 @@ def render_chart(rows: list[dict], max_bars: int = 25) -> bytes | None:
     return buf.getvalue()
 
 
+def render_exposure_chart(rows: list[dict]) -> bytes | None:
+    """Horizontal bars of each underlying holding's share of the portfolio, largest at the top."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    if not rows:
+        return None
+    data = list(reversed(rows[:10]))  # the table below lists more
+    labels = [r["name"] if len(r["name"]) <= 28 else r["name"][:27] + "…" for r in data]
+    values = [r["pct"] for r in data]
+    fig, ax = plt.subplots(figsize=(7, 0.34 * len(data) + 0.9), dpi=200)
+    ax.barh(range(len(data)), values, height=0.6, color=EXPOSURE)
+    top = max(values) or 1.0
+    for i, v in enumerate(values):
+        ax.text(v + top * 0.015, i, f"{v:.1f}%", va="center", ha="left", fontsize=8, color=INK)
+    ax.set_yticks(range(len(data)), labels, fontsize=8, color=INK)
+    ax.set_xlim(0, top * 1.15)
+    ax.xaxis.set_major_formatter(lambda x, _: f"{x:.0f}%")
+    ax.tick_params(axis="x", labelsize=7, colors=INK_MUTED, length=0)
+    ax.tick_params(axis="y", length=0)
+    ax.grid(axis="x", color=GRID, linewidth=0.6)
+    ax.set_axisbelow(True)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    fig.tight_layout()
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", facecolor="white")
+    plt.close(fig)
+    return buf.getvalue()
+
+
 # ---------------------------------------------------------------- email
 
 
@@ -203,8 +283,39 @@ def _pct(v: float | None) -> str:
     return "–" if v is None else f"{'+' if v > 0 else '−' if v < 0 else ''}{abs(v):.2f}%"
 
 
+def _pp(v: float | None) -> str:
+    return "–" if v is None else f"{'+' if v > 0 else '−' if v < 0 else ''}{abs(v):.2f} pp"
+
+
+def render_look_through(exposure: dict | None, rows: list[dict], has_chart: bool, sym: str, cell: str, num: str) -> str:
+    if not exposure or not rows:
+        return ""
+    cov = exposure["coverage"]
+    dates = sorted({f["as_of"] for f in cov["funds"] if f.get("as_of")})
+    stale = [f["ticker"] for f in cov["funds"] if f["status"] != "ok"]
+    note = (f"Your ETFs broken down into the companies they hold, combined with your direct holdings. Covers "
+            f"{cov['funds_with_data_pct'] or 0:.0f}% of your fund value"
+            + (f"; fund holdings as of {dates[0]}" + (f" to {dates[-1]}" if len(dates) > 1 else "") if dates else "")
+            + (f"; older data for {', '.join(_fund_symbol(t) for t in stale)}" if stale else "") + ".")
+    countries = " · ".join(f"{html.escape(c['name'])} {c['pct']:.0f}%" for c in exposure["countries"][:5])
+    head = "".join(f"<th style='{cell}text-align:{a};color:{INK_MUTED};font-weight:600'>{h}</th>" for h, a in (
+        ("Company", "left"), ("Value", "right"), ("Share", "right"), ("Change", "right"), ("Held via", "left")))
+    body = "".join(
+        f"<tr><td style='{cell}'>{html.escape(r['name'])}</td><td style='{num}'>{_money(r['value'], sym)}</td>"
+        f"<td style='{num}'>{r['pct']:.1f}%</td><td style='{num}'>{_pp(r['change_pp'])}</td>"
+        f"<td style='{cell}color:{INK_MUTED};font-size:12px'>{html.escape(r['held'])}</td></tr>" for r in rows)
+    chart = (f"<img src='cid:{EXPOSURE_CID}' alt='Bar chart of your largest underlying holdings by share of portfolio' "
+             f"style='width:100%;max-width:640px;height:auto'>" if has_chart else "")
+    return f"""<h2 style="font-size:16px;margin:24px 0 4px">What you really own</h2>
+<p style="color:{INK_MUTED};font-size:12px;margin:0 0 8px">{note}</p>
+{chart}
+<table style="width:100%;border-collapse:collapse;margin-top:8px"><tr>{head}</tr>{body}</table>
+<p style="color:{INK_MUTED};font-size:12px;margin:8px 0 0">Top countries: {countries}. Change is in percentage points of your portfolio since the last digest.</p>"""
+
+
 def render_html(summary: dict, rows: list[dict], news: list[dict], previous: dict | None, has_chart: bool,
-                now: datetime) -> str:
+                now: datetime, exposure: dict | None = None, exp_rows: list[dict] | None = None,
+                has_exposure_chart: bool = False) -> str:
     sym = CURRENCY.get(summary.get("currency") or "", f"{summary.get('currency') or ''} ")
     e = html.escape
     total = summary["total_value"]
@@ -256,6 +367,7 @@ def render_html(summary: dict, rows: list[dict], news: list[dict], previous: dic
 <h2 style="font-size:16px;margin:20px 0 8px">Change by holding</h2>
 {chart}
 <table style="width:100%;border-collapse:collapse;margin-top:8px"><tr>{head}</tr>{''.join(table_rows)}</table>
+{render_look_through(exposure, exp_rows or [], has_exposure_chart, sym, cell, num)}
 <h2 style="font-size:16px;margin:24px 0 0">News for your largest holdings</h2>
 {news_section}
 <p style="color:{INK_MUTED};font-size:11px;margin-top:28px">Change = price move since the last digest applied to the shares you hold now, in account currency (includes FX). Headlines from Google News, last 24 hours. Not investment advice.</p>
@@ -270,12 +382,12 @@ def subject_line(summary: dict, previous: dict | None, now: datetime) -> str:
     return s
 
 
-async def send_email(settings: Settings, subject: str, html_body: str, chart: bytes | None) -> str:
+async def send_email(settings: Settings, subject: str, html_body: str, images: dict[str, bytes]) -> str:
     payload: dict = {"from": settings.digest_from, "to": [a.strip() for a in settings.digest_to.split(",")],
                      "subject": subject, "html": html_body}
-    if chart:
-        payload["attachments"] = [{"filename": "holdings.png", "content": base64.b64encode(chart).decode(),
-                                   "content_type": "image/png", "content_id": CHART_CID}]
+    if images:
+        payload["attachments"] = [{"filename": f"{cid}.png", "content": base64.b64encode(png).decode(),
+                                   "content_type": "image/png", "content_id": cid} for cid, png in images.items()]
     async with httpx.AsyncClient(timeout=30) as c:
         r = await c.post("https://api.resend.com/emails", json=payload,
                          headers={"Authorization": f"Bearer {settings.resend_api_key.get_secret_value()}"})
@@ -295,8 +407,9 @@ def is_local_hour(hour: int, tz: str, now: datetime | None = None) -> bool:
 class Digest:
     subject: str
     html: str
-    chart: bytes | None
+    images: dict[str, bytes]  # content id -> PNG
     snapshot: dict
+    exposure: dict | None
 
 
 async def build(settings: Settings, tz: str = "Europe/London") -> Digest:
@@ -306,15 +419,17 @@ async def build(settings: Settings, tz: str = "Europe/London") -> Digest:
     summary, positions = await asyncio.gather(_fetch_summary(), _fetch_positions())
     previous = snapshots.load_latest(settings.database_url, snapshot_key(settings.env))
     rows = holding_rows(positions, previous)
-    store = Store(settings.database_url)
-    history = store.exposure_history()
-    exposure = store.load_exposure(history[-1][1]) if history else None
-    news = await fetch_news(news_targets(positions, exposure))
-    chart = render_chart(rows)
     now = datetime.now(ZoneInfo(tz))
+    store = Store(settings.database_url)
+    exposure = look_through(store, positions)
+    exp_rows = exposure_rows(exposure, previous_exposure(store, now.date().isoformat())) if exposure else []
+    news = await fetch_news(news_targets(positions, exposure))
+    images = {cid: png for cid, png in ((CHART_CID, render_chart(rows)),
+                                        (EXPOSURE_CID, render_exposure_chart(exp_rows))) if png}
     return Digest(subject=subject_line(summary, previous, now),
-                  html=render_html(summary, rows, news, previous, chart is not None, now),
-                  chart=chart, snapshot=snapshots.make_snapshot(summary, positions))
+                  html=render_html(summary, rows, news, previous, CHART_CID in images, now, exposure, exp_rows,
+                                   EXPOSURE_CID in images),
+                  images=images, snapshot=snapshots.make_snapshot(summary, positions), exposure=exposure)
 
 
 async def run(settings: Settings, preview: Path | None = None) -> str:
@@ -322,16 +437,20 @@ async def run(settings: Settings, preview: Path | None = None) -> str:
     digest = await build(settings)
     if preview is not None:
         body = digest.html
-        if digest.chart:
-            chart_path = preview.with_suffix(".png")
-            chart_path.write_bytes(digest.chart)
-            body = body.replace(f"cid:{CHART_CID}", chart_path.name)
+        for cid, png in digest.images.items():
+            image_path = preview.with_name(f"{preview.stem}-{cid}.png")
+            image_path.write_bytes(png)
+            body = body.replace(f"cid:{cid}", image_path.name)
         preview.write_text(body)
         return f"Preview written to {preview}"
     missing = [n for n, v in (("T212_RESEND_API_KEY", settings.resend_api_key), ("T212_DIGEST_TO", settings.digest_to))
                if not v]
     if missing:
         raise RuntimeError(f"set {', '.join(missing)} to send the digest")
-    email_id = await send_email(settings, digest.subject, digest.html, digest.chart)
+    email_id = await send_email(settings, digest.subject, digest.html, digest.images)
     snapshots.save(settings.database_url, snapshot_key(settings.env), digest.snapshot)
+    if digest.exposure:  # today's look-through, so the next digest can show how it shifted
+        from .lookthrough.store import Store
+
+        Store(settings.database_url).save_exposure({**digest.exposure, "as_of": datetime.now(timezone.utc).date().isoformat()})
     return f"Sent '{digest.subject}' (Resend id {email_id})"

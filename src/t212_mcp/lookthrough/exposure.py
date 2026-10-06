@@ -12,9 +12,28 @@ PAR_VALUE = re.compile(
 )
 
 
+# Kept in capitals when title-casing an all-caps issuer name: legal-form suffixes and well-known abbreviations.
+KEEP_UPPER = {"SA", "AG", "NV", "SE", "AB", "ASA", "PLC", "SPA", "LLC", "ADR", "ETF", "UK", "US", "USA", "SK", "LG",
+              "ASML", "HSBC", "BP", "BHP", "AMD", "IBM", "TSMC", "UBS", "SAP", "BYD", "AIA", "NXP", "KLA", "TJX", "RELX"}
+KEEP_LOWER = {"of", "and", "the", "de", "la", "du", "von"}
+
+
+def _title_word(word: str, first: bool) -> str:
+    core = word.strip("().,&-/")
+    if core.upper() in KEEP_UPPER:
+        return word.upper()
+    if not first and core.lower() in KEEP_LOWER:
+        return word.lower()
+    # Title-case each part, keeping web suffixes lower: AMAZON.COM -> Amazon.com, MERCADOLIBRE -> Mercadolibre
+    parts = word.split(".")
+    return ".".join(p.lower() if i and p.lower() in ("com", "net", "io") else p.capitalize() for i, p in enumerate(parts))
+
+
 def clean_name(name: str) -> str:
     s = PAR_VALUE.sub("", name).strip(" -,")
-    return s.title() if s.isupper() else s
+    if not s.isupper():
+        return s
+    return " ".join(_title_word(w, i == 0) for i, w in enumerate(s.split()))
 
 
 def _better_name(current: str | None, candidate: str, direct: bool) -> str:
