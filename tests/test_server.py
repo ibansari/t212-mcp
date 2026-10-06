@@ -180,3 +180,17 @@ def test_hosted_postgres_urls_use_psycopg():
     assert s.database_url == "postgresql+psycopg://u:p@host:5432/db"
     s = Settings(_env_file=None, api_key="k", database_url="postgresql://u:p@host/db")
     assert s.database_url == "postgresql+psycopg://u:p@host/db"
+
+
+def test_send_digest_command_runs(monkeypatch, capsys):
+    """Regression: a function-level `import logging` in another branch made `logging` unbound here."""
+    from t212_mcp import digest
+
+    async def fake_run(settings, preview=None):
+        return "Sent 'test'"
+
+    monkeypatch.setattr(digest, "run", fake_run)
+    monkeypatch.setattr(server, "client", lambda: type("C", (), {"settings": None})())
+    monkeypatch.setattr("sys.argv", ["t212-mcp", "send-digest"])
+    server.main()
+    assert "Sent 'test'" in capsys.readouterr().out

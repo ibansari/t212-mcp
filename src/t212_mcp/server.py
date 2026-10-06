@@ -394,9 +394,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.command == "refresh-holdings":
-        import asyncio
         import json
-        import logging
 
         from .lookthrough.graph import refresh
 
