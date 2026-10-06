@@ -140,10 +140,20 @@ uv run t212-mcp send-digest --preview digest.html   # write the email locally (p
 uv run t212-mcp send-digest                         # send now
 ```
 
-**On Railway** a separate `digest` service runs it, configured by `railway.digest.json`:
+**On Railway** a separate `digest` service runs it, from the same repo and image. Its start command is `t212-mcp send-digest --only-at-local-hour 7 --tz Europe/London` and its cron schedule is `0 6,7 * * 1-5`; both are set in the service settings.
 - It's scheduled for 06:00 and 07:00 UTC on weekdays, and `--only-at-local-hour 7` sends only when it's 07:00 in London. That keeps the email at 07:00 UK time on both sides of the clock change.
 - Each digest is compared with the previous digest's snapshot, which is stored separately from `get_portfolio_update`'s.
 - That snapshot is saved only after the email sends, so a failed send doesn't skip a day.
+
+### Railway service settings
+
+Railway's config files (`railway.json`) are deprecated, so each service's settings live in Railway:
+
+| Service | Settings |
+|---|---|
+| `mcp` | Dockerfile `Dockerfile`, health check `/health` (timeout 120 s), restart on failure (5 retries), public domain |
+| `digest` | Dockerfile `Dockerfile`, start command and cron schedule as above, never restart, no domain |
+| `Postgres` | Railway's Postgres. Both services use `T212_DATABASE_URL=${{Postgres.DATABASE_URL}}` |
 
 ## Data model
 
