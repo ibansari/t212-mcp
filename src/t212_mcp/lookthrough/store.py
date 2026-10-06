@@ -76,11 +76,12 @@ class Store:
             return [self._fund_dict(f) for f in s.scalars(select(m.Fund).order_by(m.Fund.isin))]
 
     # ---- exposure snapshots
-    def save_exposure(self, exposure: dict, day: date | None = None) -> int:
+    def save_exposure(self, exposure: dict, *, user_id: str, day: date | None = None) -> int:
         day = day or date.today()
         with self.sessions.begin() as s:
-            row = s.scalars(select(m.ExposureSnapshot).where(m.ExposureSnapshot.as_of == day)).first()
-            row = row or m.ExposureSnapshot(as_of=day)
+            row = s.scalars(select(m.ExposureSnapshot).where(m.ExposureSnapshot.user_id == user_id,
+                                                             m.ExposureSnapshot.as_of == day)).first()
+            row = row or m.ExposureSnapshot(user_id=user_id, as_of=day)
             row.created_at = db.utcnow()
             row.invested_value = exposure["invested_value"]
             row.securities_count = exposure["securities_count"]
@@ -92,26 +93,32 @@ class Store:
             s.flush()
             return row.id
 
-    def exposure_history(self) -> list[tuple[str, int]]:
+    def exposure_history(self, *, user_id: str) -> list[tuple[str, int]]:
         """(ISO day, snapshot id), oldest first."""
         with self.sessions() as s:
-            rows = s.execute(select(m.ExposureSnapshot.as_of, m.ExposureSnapshot.id).order_by(m.ExposureSnapshot.as_of))
+            rows = s.execute(select(m.ExposureSnapshot.as_of, m.ExposureSnapshot.id)
+                             .where(m.ExposureSnapshot.user_id == user_id).order_by(m.ExposureSnapshot.as_of))
             return [(d.isoformat(), i) for d, i in rows]
 
-    def load_exposure(self, snapshot_id: int) -> dict:
+    def load_exposure(self, snapshot_id: int, *, user_id: str) -> dict:
         with self.sessions() as s:
-            return s.get_one(m.ExposureSnapshot, snapshot_id).payload
+            row = s.get_one(m.ExposureSnapshot, snapshot_id)
+            if row.user_id != user_id:
+                raise LookupError("exposure snapshot belongs to another user")
+            return row.payload
 
     # ---- agent run log
     def log_run(self, entry: dict) -> None:
-        fields = {k: entry.get(k) for k in ("event", "isin", "model", "recipe_id", "tokens", "attempts", "error")}
+        fields = {k: entry.get(k) for k in ("event", "isin", "model", "recipe_id", "tokens", "attempts", "error", "user_id")}
         with self.sessions.begin() as s:
             s.add(m.AgentRun(at=db.utcnow(), **fields))
 
-    def runs(self, limit: int | None = None) -> list[dict]:
-        """Agent events, oldest first (the most recent `limit` if given)."""
+    def runs(self, limit: int | None = None, user_id: str | None = None) -> list[dict]:
+        """Agent events, oldest first (the most recent `limit` if given); only one user's when user_id is given."""
         with self.sessions() as s:
             q = select(m.AgentRun).order_by(m.AgentRun.at.desc(), m.AgentRun.id.desc())
+            if user_id is not None:
+                q = q.where(m.AgentRun.user_id == user_id)
             rows = list(s.scalars(q.limit(limit) if limit else q))
         out = []
         for r in reversed(rows):
@@ -121,17 +128,20 @@ class Store:
         return out
 
     # ---- digest baselines
-    def save_baseline(self, *, env: str, day: date, taken_at: datetime, portfolio: dict, exposure: dict | None) -> None:
+    def save_baseline(self, *, user_id: str, env: str, day: date, taken_at: datetime, portfolio: dict,
+                      exposure: dict | None) -> None:
         with self.sessions.begin() as s:
-            row = s.scalars(select(m.DigestBaseline).where(m.DigestBaseline.env == env, m.DigestBaseline.day == day)).first()
-            row = row or m.DigestBaseline(env=env, day=day)
+            row = s.scalars(select(m.DigestBaseline).where(m.DigestBaseline.user_id == user_id, m.DigestBaseline.env == env,
+                                                           m.DigestBaseline.day == day)).first()
+            row = row or m.DigestBaseline(user_id=user_id, env=env, day=day)
             row.taken_at, row.portfolio, row.exposure = taken_at, portfolio, exposure
             s.add(row)
 
-    def latest_baseline(self, env: str, before: date) -> dict | None:
+    def latest_baseline(self, env: str, before: date, *, user_id: str) -> dict | None:
         """The most recent baseline from a day before `before`."""
         with self.sessions() as s:
-            row = s.scalars(select(m.DigestBaseline).where(m.DigestBaseline.env == env, m.DigestBaseline.day < before)
+            row = s.scalars(select(m.DigestBaseline).where(m.DigestBaseline.user_id == user_id, m.DigestBaseline.env == env,
+                                                           m.DigestBaseline.day < before)
                             .order_by(m.DigestBaseline.day.desc()).limit(1)).first()
             return {"day": row.day, "portfolio": row.portfolio, "exposure": row.exposure} if row else None
 

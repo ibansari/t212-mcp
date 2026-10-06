@@ -36,19 +36,28 @@ class DatabaseSettings(BaseSettings):
 
 
 class Settings(DatabaseSettings):
-    api_key: SecretStr
+    # The owner's key: used by stdio/CLI, the digest, and the owner's MCP requests. Other users connect their own
+    # key on the account page.
+    api_key: SecretStr | None = None
     # Optional: keys created before Trading 212 introduced secrets authenticate with the key alone.
     api_secret: SecretStr | None = None
     env: Literal["live", "demo"] = "live"
     data_dir: Path = Path.home() / ".t212_mcp"  # logs from the scheduled refresh
     # HTTP auth (one is required when binding to anything other than localhost).
-    # GitHub sign-in: a GitHub OAuth App, the accounts allowed in (comma-separated usernames or numeric user IDs), and
-    # the server's public URL (defaults to https://$RAILWAY_PUBLIC_DOMAIN on Railway).
-    github_client_id: str | None = None
-    github_client_secret: SecretStr | None = None
-    allowed_github_users: str = ""
+    # Sign-in with WorkOS AuthKit (multi-user): the AuthKit domain (e.g. https://your-app.authkit.app), the WorkOS
+    # API key and client id (account page sign-in and Vault, where users' Trading 212 keys are stored), a Fernet key
+    # that seals the account page's session cookie, and the server's public URL (defaults to
+    # https://$RAILWAY_PUBLIC_DOMAIN on Railway).
+    authkit_domain: str | None = None
+    workos_api_key: SecretStr | None = None
+    workos_client_id: str | None = None
+    workos_cookie_password: SecretStr | None = None
     public_url: str | None = None
-    # Or a static bearer token (ignored when GitHub sign-in is configured).
+    # The owner (by email) owns pre-existing data and uses api_key above; admins may use the agent and see all
+    # agent traces. Comma-separated.
+    owner_email: str | None = None
+    admin_emails: str = ""
+    # Or a static bearer token, single-user (ignored when AuthKit is configured).
     mcp_auth_token: SecretStr | None = None
 
     # Morning digest email (t212-mcp send-digest), sent through Resend. digest_to is comma-separated.
@@ -72,8 +81,10 @@ class Settings(DatabaseSettings):
     max_repair_attempts: int = 3
     max_agent_runs_per_day: int = 5
 
-    @field_validator("api_secret", "github_client_id", "github_client_secret", "public_url", "mcp_auth_token",
-                     "openai_api_key", "resend_api_key", "digest_to", "openfigi_api_key", mode="before")
+    @field_validator("api_secret", "public_url", "mcp_auth_token",
+                     "openai_api_key", "resend_api_key", "digest_to", "openfigi_api_key", "authkit_domain",
+                     "workos_api_key", "workos_client_id", "workos_cookie_password", "owner_email", "api_key",
+                     mode="before")
     @classmethod
     def _blank_is_unset(cls, v):
         """`KEY=` in .env means not set, not an empty secret."""
@@ -84,8 +95,8 @@ class Settings(DatabaseSettings):
         return BASE_URLS[self.env]
 
     @property
-    def allowed_github_user_set(self) -> set[str]:
-        return {u.strip().lstrip("@").lower() for u in self.allowed_github_users.split(",") if u.strip()}
+    def admin_email_set(self) -> set[str]:
+        return {e.strip().lower() for e in [*self.admin_emails.split(","), self.owner_email or ""] if e.strip()}
 
     @property
     def public_base_url(self) -> str | None:

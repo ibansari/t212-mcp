@@ -134,9 +134,19 @@ log = logging.getLogger("t212_mcp.lookthrough")
 TRANSIENT = re.compile(r"HTTP 5\d\d|ConnectError|Timeout|timed out|ReadError|RemoteProtocolError|Temporary", re.I)
 
 
+class RefreshBusy(Exception):
+    """Another refresh (any user, any service) holds the refresh lock."""
+
+
+REFRESH_LOCK_KEY = 2120212  # pg advisory lock id shared by every refresh
+
+
 class Pipeline:
-    def __init__(self, settings: Settings, store: Store | None = None, registry: Registry | None = None, model=None):
+    def __init__(self, settings: Settings, store: Store | None = None, registry: Registry | None = None, model=None,
+                 client=None, user_id: str | None = None):
         self.settings = settings
+        self.client = client  # whose positions to refresh for; the owner's when None
+        self.user_id = user_id
         self.store = store or Store(settings.database_url)
         self.registry = registry or Registry(settings.database_url)
         self._model = model
@@ -219,7 +229,7 @@ class Pipeline:
             return "unresolved"
         if self.store.agent_runs_today() >= self.settings.max_agent_runs_per_day:
             return "unresolved"
-        self.store.log_run({"isin": state["fund"]["isin"], "event": "agent_start", "model": self.settings.llm_model})
+        self.store.log_run({"user_id": self.user_id, "isin": state["fund"]["isin"], "event": "agent_start", "model": self.settings.llm_model})
         return "repair" if state.get("recipe") else "discover"
 
     async def discover(self, state: FundState) -> dict:
@@ -360,7 +370,7 @@ class Pipeline:
         fh = FundHoldings.model_validate(state["holdings"])
         fh.recipe_id = stored.id
         self.store.save_fund(fund["isin"], status="ok", holdings=fh, recipe_id=stored.id, report=state.get("report"), error=None)
-        self.store.log_run({"isin": fund["isin"], "event": "recipe_saved", "recipe_id": stored.id, "tokens": state.get("tokens", 0),
+        self.store.log_run({"user_id": self.user_id, "isin": fund["isin"], "event": "recipe_saved", "recipe_id": stored.id, "tokens": state.get("tokens", 0),
                             "attempts": state.get("attempts", 0), "model": self.settings.llm_model})
         return {"status": "ok", "detail": f"new recipe {stored.id} ({stored.kind}, {stored.scope} scope{scope_note})"}
 
@@ -378,7 +388,7 @@ class Pipeline:
         log.info("%s: %s (%s)", fund["ticker"], status, reason[:200])
         self.store.save_fund(fund["isin"], status=status, error=reason)
         if state.get("tokens"):
-            self.store.log_run({"isin": fund["isin"], "event": "agent_failed", "tokens": state["tokens"],
+            self.store.log_run({"user_id": self.user_id, "isin": fund["isin"], "event": "agent_failed", "tokens": state["tokens"],
                                 "attempts": state.get("attempts", 0), "error": reason, "model": self.settings.llm_model})
         return {"status": status, "detail": reason}
 
@@ -405,8 +415,9 @@ class Pipeline:
     async def load_positions(self, state: RunState) -> dict:
         from ..server import _fetch_positions, client, symbol
 
-        positions = await _fetch_positions()
-        instruments = await client().get("/equity/metadata/instruments", ttl=86400)
+        c = self.client or await client()
+        positions = await _fetch_positions(c)
+        instruments = await c.get("/equity/metadata/instruments", ttl=86400)
         types = {i["ticker"]: i.get("type") for i in instruments}
         funds = [
             {"isin": p["isin"], "name": p["name"], "ticker": symbol(p["ticker"]), "t212_ticker": p["ticker"]}
@@ -445,7 +456,7 @@ class Pipeline:
                                     entities=entities.entity_map(self.store, None))
         exposure["as_of"] = date.today().isoformat()
         exposure["refresh_results"] = state.get("results", [])
-        self.store.save_exposure(exposure)
+        self.store.save_exposure(exposure, user_id=self.user_id)
         return {"exposure": exposure}
 
     def run_graph(self, checkpointer=None):
@@ -461,24 +472,41 @@ class Pipeline:
         return g.compile(checkpointer=checkpointer)
 
 
-async def refresh(settings: Settings, allow_agent: bool = False, max_concurrency: int | None = None) -> dict:
-    """One full look-through refresh. Checkpointed to Postgres so an interrupted run can be inspected/resumed."""
+async def refresh(settings: Settings, allow_agent: bool = False, max_concurrency: int | None = None, *,
+                  client=None, user_id: str | None = None) -> dict:
+    """One look-through refresh of one user's funds (the owner's by default) into the shared fund store, saving
+    that user's exposure snapshot. Only one refresh runs at a time across users and services (advisory lock)."""
+    from sqlalchemy import text
+
+    from .. import accounts, db
+
+    user_id = accounts.OWNER_ID if user_id is None else user_id
+    with db.engine(settings.database_url).connect() as lock:
+        if not lock.scalar(text("SELECT pg_try_advisory_lock(:k)"), {"k": REFRESH_LOCK_KEY}):
+            raise RefreshBusy()
+        try:
+            return await _run(settings, allow_agent, max_concurrency, client, user_id)
+        finally:
+            lock.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": REFRESH_LOCK_KEY})
+
+
+async def _run(settings: Settings, allow_agent: bool, max_concurrency: int | None, client, user_id: str) -> dict:
+    """The refresh graph, checkpointed to Postgres so an interrupted run can be inspected."""
     from datetime import datetime
 
     from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
     from sqlalchemy.engine import make_url
 
     conninfo = make_url(settings.database_url).set(drivername="postgresql").render_as_string(hide_password=False)
-
     # With the agent on, run funds one at a time so a recipe learnt for one fund (e.g. issuer-wide) is reused
     # by the issuer's other funds instead of researching each of them in parallel.
     if max_concurrency is None:
         max_concurrency = 1 if allow_agent else 4
-    pipeline = Pipeline(settings)
+    pipeline = Pipeline(settings, client=client, user_id=user_id)
     async with AsyncPostgresSaver.from_conn_string(conninfo) as saver:
         await saver.setup()
         graph = pipeline.run_graph(checkpointer=saver)
-        thread = f"refresh-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        thread = f"refresh-{user_id}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
         out = await graph.ainvoke(
             {"allow_agent": allow_agent, "results": []},
             config={"configurable": {"thread_id": thread}, "max_concurrency": max_concurrency},

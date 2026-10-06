@@ -8,7 +8,7 @@ import respx
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
 
-from t212_mcp import server, snapshots
+from t212_mcp import accounts, server, snapshots
 from t212_mcp.auth import bearer_auth
 from t212_mcp.client import T212Client, auth_header
 from t212_mcp.config import Settings
@@ -41,6 +41,7 @@ POSITIONS = [pos("AAPL_US_EQ", "Apple", 2, 750.0, 500.0), pos("HIESl_EQ", "HSBC 
 def settings(database_url, monkeypatch):
     s = Settings(_env_file=None, api_key="key", api_secret="secret", env="demo", database_url=database_url)
     monkeypatch.setattr(server, "_client", T212Client(s))
+    monkeypatch.setattr(accounts, "_settings", s)  # never read the developer's .env in tests
     return s
 
 
@@ -86,7 +87,7 @@ async def test_retries_once_on_429(settings):
             httpx.Response(200, json=SUMMARY),
         ]
     )
-    data = await server.client().get("/equity/account/summary")
+    data = await (await server.client()).get("/equity/account/summary")
     assert data["totalValue"] == 1200.0
 
 
@@ -94,7 +95,7 @@ async def test_retries_once_on_429(settings):
 async def test_401_becomes_tool_error(settings):
     respx.get(f"{BASE}/equity/account/summary").respond(401)
     with pytest.raises(ToolError, match="rejected the credentials"):
-        await server.client().get("/equity/account/summary")
+        await (await server.client()).get("/equity/account/summary")
 
 
 @respx.mock
@@ -105,7 +106,7 @@ async def test_pagination_follows_next_page_path(settings):
     respx.get(f"{BASE}/equity/history/transactions").respond(
         json={"items": [{"amount": 1}], "nextPagePath": "/api/v0/equity/history/transactions?limit=1&cursor=2"}
     )
-    items = await server.client().get_paginated("/equity/history/transactions", limit=2)
+    items = await (await server.client()).get_paginated("/equity/history/transactions", limit=2)
     assert [i["amount"] for i in items] == [1, 2]
 
 
@@ -124,7 +125,7 @@ async def test_portfolio_update_diffs_against_previous_snapshot(settings):
             "TSLA_US_EQ": {"name": "Tesla", "quantity": 1, "value": 100.0, "pnl": 0.0},
         },
     }
-    snapshots.save(settings.database_url, "demo", prev)
+    snapshots.save(settings.database_url, "demo", prev, user_id=accounts.OWNER_ID)
     async with Client(server.mcp) as c:
         r = await c.call_tool("get_portfolio_update", {})
     d = r.data["since_last_update"]
@@ -134,7 +135,7 @@ async def test_portfolio_update_diffs_against_previous_snapshot(settings):
     assert d["quantity_changes"] == [{"ticker": "AAPL_US_EQ", "name": "Apple", "from": 1, "to": 2}]
     assert d["biggest_pnl_gains"] == [{"ticker": "AAPL_US_EQ", "name": "Apple", "pnl_change": 150.0}]
     assert r.data["top_losers"][0]["ticker"] == "HIESl_EQ"
-    assert snapshots.load_latest(settings.database_url, "demo")["total_value"] == 1200.0
+    assert snapshots.load_latest(settings.database_url, "demo", user_id=accounts.OWNER_ID)["total_value"] == 1200.0
 
 
 async def test_bearer_auth_accepts_only_the_configured_token():
@@ -143,26 +144,28 @@ async def test_bearer_auth_accepts_only_the_configured_token():
     assert await verifier.verify_token("wrong") is None
 
 
+@respx.mock
 async def test_refresh_runs_in_background_and_reports_status(settings, monkeypatch):
+    respx.get(f"{BASE}/equity/positions").respond(json=POSITIONS)  # get_holdings_status scopes to your funds
     from t212_mcp.lookthrough import graph
 
     gate = asyncio.Event()
 
-    async def fake_refresh(s, allow_agent=False):
+    async def fake_refresh(s, allow_agent=False, **kw):
         await gate.wait()
         return {"as_of": "2026-10-05", "refresh_results": [{"ticker": "HIES", "status": "ok"}],
                 "coverage": {"funds_with_data_pct": 100.0}}
 
     monkeypatch.setattr(graph, "refresh", fake_refresh)
-    monkeypatch.setattr(server, "_refresh", {"state": "idle"})
-    monkeypatch.setattr(server, "_refresh_task", None)
+    monkeypatch.setattr(server, "_refresh", {})
+    monkeypatch.setattr(server, "_refresh_tasks", {})
     async with Client(server.mcp) as c:
         started = (await c.call_tool("refresh_etf_holdings", {})).data
         again = (await c.call_tool("refresh_etf_holdings", {})).data
         assert started["started"] and started["state"] == "running"
         assert again["started"] is False
         gate.set()
-        await server._refresh_task
+        await server._refresh_tasks[accounts.OWNER_ID]
         status = (await c.call_tool("get_holdings_status", {})).data
     assert status["refresh"]["state"] == "done" and status["refresh"]["results"][0]["ticker"] == "HIES"
 

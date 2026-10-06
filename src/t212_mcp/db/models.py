@@ -10,6 +10,34 @@ class Base(DeclarativeBase):
     type_annotation_map = {dict: JSONB, datetime: DateTime(timezone=True)}
 
 
+# ---------------------------------------------------------------- users
+
+
+USER_ID = String(64)  # a WorkOS user id (user_01...), or "owner"
+
+
+class User(Base):
+    """Someone who signed in with WorkOS AuthKit. id is the WorkOS user id; the owner's rows use "owner"."""
+
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(USER_ID, primary_key=True)
+    email: Mapped[str | None] = mapped_column(String(320))
+    created_at: Mapped[datetime]
+    last_seen_at: Mapped[datetime]
+
+
+class UserCredentials(Base):
+    """Where a user's Trading 212 key lives. The key itself is stored encrypted in WorkOS Vault, never here."""
+
+    __tablename__ = "user_credentials"
+
+    user_id: Mapped[str] = mapped_column(USER_ID, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    vault_object_id: Mapped[str] = mapped_column(String(100))
+    env: Mapped[str] = mapped_column(String(8))  # live | demo
+    verified_at: Mapped[datetime]
+
+
 # ---------------------------------------------------------------- portfolio snapshots
 
 
@@ -17,10 +45,11 @@ class PortfolioSnapshot(Base):
     """Account totals at one `get_portfolio_update` call; the next call diffs against the latest one."""
 
     __tablename__ = "portfolio_snapshots"
-    __table_args__ = (Index("ix_portfolio_snapshots_env_taken_at", "env", "taken_at"),)
+    __table_args__ = (Index("ix_portfolio_snapshots_user_env_taken_at", "user_id", "env", "taken_at"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    env: Mapped[str] = mapped_column(String(8))  # live | demo
+    user_id: Mapped[str] = mapped_column(USER_ID)
+    env: Mapped[str] = mapped_column(String(8))  # series: live | demo | dg-live | dg-demo
     taken_at: Mapped[datetime]
     total_value: Mapped[float] = mapped_column(Float)
     invested_value: Mapped[float] = mapped_column(Float)
@@ -120,9 +149,11 @@ class ExposureSnapshot(Base):
     """The combined look-through exposure for one day. Headline numbers are columns; the breakdowns are JSON."""
 
     __tablename__ = "exposure_snapshots"
+    __table_args__ = (UniqueConstraint("user_id", "as_of", name="uq_exposure_snapshots_user_day"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    as_of: Mapped[date] = mapped_column(Date, unique=True)
+    user_id: Mapped[str] = mapped_column(USER_ID)
+    as_of: Mapped[date] = mapped_column(Date)
     created_at: Mapped[datetime]
     invested_value: Mapped[float] = mapped_column(Float)
     securities_count: Mapped[int] = mapped_column(Integer)
@@ -137,9 +168,10 @@ class DigestBaseline(Base):
     measured against the previous day's baseline, so extra or manual runs don't move the comparison point."""
 
     __tablename__ = "digest_baselines"
-    __table_args__ = (UniqueConstraint("env", "day"),)
+    __table_args__ = (UniqueConstraint("user_id", "env", "day", name="uq_digest_baselines_user_env_day"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[str] = mapped_column(USER_ID)
     env: Mapped[str] = mapped_column(String(8))
     day: Mapped[date] = mapped_column(Date)  # local date in the digest's time zone
     taken_at: Mapped[datetime]
@@ -198,6 +230,7 @@ class AgentRun(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     at: Mapped[datetime] = mapped_column(index=True)
+    user_id: Mapped[str | None] = mapped_column(USER_ID, index=True)  # who triggered it
     event: Mapped[str] = mapped_column(String(20))  # agent_start | recipe_saved | agent_failed
     isin: Mapped[str | None] = mapped_column(String(12))
     model: Mapped[str | None] = mapped_column(String(120))

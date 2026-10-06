@@ -3,31 +3,54 @@
 import asyncio
 import base64
 import time
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
 from fastmcp.exceptions import ToolError
 
-from .config import Settings
+from .config import BASE_URLS, Settings
 
 API_PREFIX = "/api/v0"
 MAX_PAGE_SIZE = 50
 
 
-def auth_header(settings: Settings) -> str:
-    key = settings.api_key.get_secret_value()
-    if settings.api_secret is None:
-        return key
-    token = base64.b64encode(f"{key}:{settings.api_secret.get_secret_value()}".encode()).decode()
+@dataclass(frozen=True)
+class Credentials:
+    api_key: str
+    api_secret: str | None
+    env: str  # live | demo
+
+    @classmethod
+    def from_settings(cls, settings: Settings) -> "Credentials":
+        if settings.api_key is None:
+            raise ToolError("Missing configuration: set T212_API_KEY (and T212_API_SECRET) in .env.")
+        return cls(settings.api_key.get_secret_value(),
+                   settings.api_secret.get_secret_value() if settings.api_secret else None, settings.env)
+
+    def __repr__(self) -> str:  # never print keys
+        return f"Credentials(env={self.env!r})"
+
+
+def auth_header(creds: "Credentials | Settings") -> str:
+    if isinstance(creds, Settings):
+        creds = Credentials.from_settings(creds)
+    if creds.api_secret is None:
+        return creds.api_key
+    token = base64.b64encode(f"{creds.api_key}:{creds.api_secret}".encode()).decode()
     return f"Basic {token}"
 
 
 class T212Client:
-    def __init__(self, settings: Settings, transport: httpx.AsyncBaseTransport | None = None):
+    """One Trading 212 account. `creds` defaults to the key in settings (the owner / single-user setup)."""
+
+    def __init__(self, settings: Settings, transport: httpx.AsyncBaseTransport | None = None,
+                 creds: Credentials | None = None):
         self.settings = settings
+        self.creds = creds or Credentials.from_settings(settings)
         self._http = httpx.AsyncClient(
-            base_url=settings.base_url,
-            headers={"Authorization": auth_header(settings), "Accept": "application/json"},
+            base_url=BASE_URLS[self.creds.env],
+            headers={"Authorization": auth_header(self.creds), "Accept": "application/json"},
             timeout=20.0,
             transport=transport,
         )
@@ -75,7 +98,7 @@ class T212Client:
             raise ToolError("Trading 212 rate limit hit; try again in a few seconds.")
         if resp.status_code == 401:
             raise ToolError(
-                f"Trading 212 rejected the credentials (env={self.settings.env}). "
+                f"Trading 212 rejected the credentials (env={self.creds.env}). "
                 "Check T212_API_KEY / T212_API_SECRET and that the key belongs to this environment."
             )
         if resp.status_code == 403:

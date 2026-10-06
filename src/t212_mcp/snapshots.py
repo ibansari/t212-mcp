@@ -24,9 +24,9 @@ def make_snapshot(summary: dict, positions: list[dict]) -> dict:
     }
 
 
-def load_latest(database_url: str, env: str, before: datetime | None = None) -> dict | None:
+def load_latest(database_url: str, env: str, *, user_id: str, before: datetime | None = None) -> dict | None:
     with db.sessions(database_url)() as s:
-        q = select(m.PortfolioSnapshot).where(m.PortfolioSnapshot.env == env)
+        q = select(m.PortfolioSnapshot).where(m.PortfolioSnapshot.user_id == user_id, m.PortfolioSnapshot.env == env)
         if before is not None:
             q = q.where(m.PortfolioSnapshot.taken_at < before)
         snap = s.scalars(q.order_by(m.PortfolioSnapshot.taken_at.desc(), m.PortfolioSnapshot.id.desc()).limit(1)).first()
@@ -43,11 +43,11 @@ def load_latest(database_url: str, env: str, before: datetime | None = None) -> 
         }
 
 
-def save(database_url: str, env: str, snapshot: dict) -> None:
+def save(database_url: str, env: str, snapshot: dict, *, user_id: str) -> None:
     taken_at = db.aware(datetime.fromisoformat(snapshot["taken_at"])).astimezone(timezone.utc)
     with db.sessions(database_url).begin() as s:
         s.add(m.PortfolioSnapshot(
-            env=env, taken_at=taken_at, total_value=snapshot["total_value"],
+            user_id=user_id, env=env, taken_at=taken_at, total_value=snapshot["total_value"],
             invested_value=snapshot["invested_value"], unrealized_pnl=snapshot["unrealized_pnl"],
             cash_available=snapshot["cash_available"],
             positions=[m.PortfolioPosition(ticker=t, **p) for t, p in snapshot["positions"].items()],

@@ -28,34 +28,52 @@ claude mcp add --transport http trading212-http http://127.0.0.1:8765/mcp --head
 
 The server refuses to listen on a non-local address without one of these:
 
-- **GitHub sign-in** (recommended for anything public): only the GitHub accounts in `T212_ALLOWED_GITHUB_USERS` get in. See [GitHub sign-in](#github-sign-in).
-- **A static bearer token**: set `T212_MCP_AUTH_TOKEN`, and every request needs `Authorization: Bearer <token>`.
+- **Sign-in with WorkOS AuthKit** (multi-user, recommended for anything public): each person signs in and sees only their own Trading 212 account. See [Multiple users](#multiple-users).
+- **A static bearer token** (single-user): set `T212_MCP_AUTH_TOKEN`, and every request needs `Authorization: Bearer <token>`.
 
-Whichever you use, create the Trading 212 key with read scopes only. Then even a leaked credential can't place orders or move money.
+Whichever you use, create Trading 212 keys with read scopes only. Then even a leaked credential can't place orders or move money.
 
-## GitHub sign-in
+## Multiple users
 
-1. On GitHub go to **Settings → Developer settings → OAuth Apps → New OAuth App**:
-   - **Homepage URL:** `https://<your-domain>`
-   - **Authorization callback URL:** `https://<your-domain>/auth/callback`
+Anyone you let sign in can connect their own Trading 212 account and ask Claude about it. Fund holdings, recipes and company matching are shared, so a fund researched once serves everyone. Each person's portfolio, snapshots and look-through history are private to them.
 
-   Register it, then generate a client secret.
+**Sign-in and key storage are provided by [WorkOS](https://workos.com):**
+
+- **Claude's sign-in:** AuthKit hosts the login and registers Claude's connector automatically. This server only checks the AuthKit-issued tokens.
+- **The account page** (`/account`): people sign in with AuthKit and paste a read-only Trading 212 key. The key is checked against Trading 212, then stored encrypted in **WorkOS Vault**. The database keeps only a reference to it.
+- **Who can sign up** (open, invite-only, or particular sign-in methods) is set in the WorkOS dashboard, not in code.
+
+**Setup:**
+
+1. In the [WorkOS dashboard](https://dashboard.workos.com):
+   1. Turn on AuthKit and **Dynamic Client Registration** (Applications → Configuration).
+   2. Add the redirect URI `https://<your-domain>/account/callback`.
+   3. Add `https://<your-domain>/mcp` as a **resource indicator**, so tokens are issued for this server.
+   4. Note your AuthKit domain, API key and client ID.
 2. Set these variables:
 
    | Variable | Value |
    |---|---|
-   | `T212_GITHUB_CLIENT_ID` | From step 1 |
-   | `T212_GITHUB_CLIENT_SECRET` | From step 1 |
-   | `T212_ALLOWED_GITHUB_USERS` | Your GitHub username. Comma-separate several. A numeric user ID also works and survives renames |
+   | `T212_AUTHKIT_DOMAIN` | e.g. `https://your-app.authkit.app` |
+   | `T212_WORKOS_API_KEY` | WorkOS API key (`sk_...`). Used for the account page's sign-in and for Vault |
+   | `T212_WORKOS_CLIENT_ID` | WorkOS client ID (`client_...`) |
+   | `T212_WORKOS_COOKIE_PASSWORD` | Seals the account page's session cookie. Generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
+   | `T212_OWNER_EMAIL` | Your sign-in email. You keep the server's own key (`T212_API_KEY`), your existing data, the digest and admin rights |
+   | `T212_ADMIN_EMAILS` | Optional. Others who may use the discovery agent and see every agent trace |
    | `T212_PUBLIC_URL` | `https://<your-domain>`. Not needed on Railway, which supplies the domain |
 
-3. Connect Claude Code, then run `/mcp` → **Authenticate**. A browser opens: approve the consent page, then authorize the app on GitHub.
+3. If the database predates multi-user support, run `t212-mcp upgrade-multiuser` once. It assigns existing personal data to you and removes the old sign-in session table.
+4. Each person, including you, goes to `https://<your-domain>/account`, signs in and connects a key. You use the server's key. Then they add the connector in Claude: `https://<your-domain>/mcp`.
 
-   ```bash
-   claude mcp add --transport http trading212 https://<your-domain>/mcp
-   ```
+**Guardrails:**
 
-The app asks GitHub only for `read:user`, which identifies you and nothing more. The server checks the GitHub account behind every request, and any other account gets `401`, even after signing in successfully. Sign-ins are stored encrypted in Postgres, so they survive redeploys.
+- **The paid discovery agent is for admins only.** Other users' refreshes use saved recipes and known sources; any fund still without a source waits for an admin.
+- **Refresh cooldown:** non-admins can start one refresh every 10 minutes.
+- **Only one refresh runs at a time,** across all users and services, enforced by a database lock.
+- **Privacy:** `get_holdings_status` and `get_agent_trace` only show funds the caller holds.
+- **Deleting data:** on the account page, people can delete their key and history.
+
+Holding other people's API keys carries responsibility: check Trading 212's API terms before inviting anyone.
 
 ## Run with Docker Compose
 

@@ -2,7 +2,7 @@
 
 The server speaks the [Model Context Protocol](https://modelcontextprotocol.io). It exposes 12 tools, 1 resource and 1 prompt.
 
-- **HTTP:** `POST <host>/mcp` (streamable HTTP). Requests are authenticated by GitHub sign-in (OAuth 2.1, limited to `T212_ALLOWED_GITHUB_USERS`) or by a static `Authorization: Bearer <token>` (`T212_MCP_AUTH_TOKEN`). Requests without valid credentials get `401`. `GET /health` returns `ok` and needs no authentication.
+- **HTTP:** `POST <host>/mcp` (streamable HTTP). Requests are authenticated by WorkOS AuthKit sign-in (OAuth 2.1; each user sees only their own Trading 212 account) or by a static `Authorization: Bearer <token>` (`T212_MCP_AUTH_TOKEN`). Requests without valid credentials get `401`. `GET /health` returns `ok` and needs no authentication.
 - **stdio:** `t212-mcp` with no arguments.
 
 Money is in the account currency unless a field names a currency. Percentages are 0–100. Timestamps are ISO 8601.
@@ -25,6 +25,8 @@ Errors come back as MCP tool errors (`isError: true`) with a readable message. S
 | [`refresh_etf_holdings`](#refresh_etf_holdings) | Yes | Start a background refresh of fund holdings, optionally with the agent |
 
 None of the tools can place, change or cancel orders.
+
+**Every tool acts for the caller.** With AuthKit sign-in, each person sees only their own Trading 212 account and history. A caller who hasn't connected a key on `/account` gets an error with the link. In stdio, CLI and single-user (bearer token) setups, the caller is the owner.
 
 ---
 
@@ -194,7 +196,7 @@ These read from the database, which a refresh fills (`refresh_etf_holdings` or `
 
 ### `get_etf_exposure`
 
-What you really own once each ETF is broken into its holdings, combined with the stocks you hold directly. Uses the latest refresh.
+What you really own once each ETF is broken into its holdings, combined with the stocks you hold directly. It's computed when you ask, from your current positions and each fund's latest stored holdings (shared between users), with share classes and listings of one company combined.
 
 **Parameters**
 
@@ -242,7 +244,7 @@ How exposure shifted between the latest refresh and the one `days` ago. Falls ba
 
 ### `get_holdings_status`
 
-Health of the look-through pipeline.
+Health of the look-through pipeline for **your** funds. Other users' funds aren't shown; admins see all.
 
 **Parameters:** none.
 
@@ -273,7 +275,7 @@ Refresh status is kept in memory, so a server restart resets it to `idle`. Saved
 
 ### `get_agent_trace`
 
-Recent discovery-agent traces for one fund, newest first. Use it to see why the agent failed to find or fix a holdings source.
+Recent discovery-agent traces for one fund, newest first. Use it to see why the agent failed to find or fix a holdings source. Only available for funds you hold. Admins can read any fund's traces, plus `ENTITIES` for company matching.
 
 **Parameters**
 
@@ -298,7 +300,7 @@ Annotations: `readOnlyHint: false`, `destructiveHint: false`, `openWorldHint: tr
 |---|---|---|---|
 | `allow_agent` | bool | `false` | Let the discovery agent research funds that have no working recipe. Uses OpenAI, can take several minutes, and is limited by `T212_MAX_AGENT_RUNS_PER_DAY` and `T212_AGENT_TOKEN_BUDGET` |
 
-Without `allow_agent`, only saved recipes are used and no LLM is called. Funds run 4 at a time, or one at a time with the agent, so a recipe learned for one fund can be reused by the issuer's other funds.
+`allow_agent` is honoured for admins only (it spends OpenAI credit). For everyone else, funds without a saved or known source are left for an admin to research. Non-admins can start one refresh every 10 minutes, and only one refresh runs at a time across all users. Without `allow_agent`, only saved recipes and known sources are used and no LLM is called. Funds run 4 at a time, or one at a time with the agent, so a recipe learned for one fund can be reused by the issuer's other funds.
 
 **Returns** `{started, state, allow_agent, started_at}`.
 - `started: true` with `state: "running"` when a refresh was started.
@@ -366,11 +368,14 @@ Read from the environment or `.env`. All names have the `T212_` prefix except `O
 | `T212_API_SECRET` | none | API secret (older keys work without one) |
 | `T212_ENV` | `live` | `live` or `demo` |
 | `T212_DATABASE_URL` | `postgresql+psycopg://t212:t212@localhost:5432/t212` | Postgres connection |
-| `T212_GITHUB_CLIENT_ID` | none | GitHub OAuth App client ID; turns on GitHub sign-in |
-| `T212_GITHUB_CLIENT_SECRET` | none | GitHub OAuth App client secret |
-| `T212_ALLOWED_GITHUB_USERS` | none | Comma-separated GitHub usernames or numeric user IDs allowed in (required with GitHub sign-in) |
+| `T212_AUTHKIT_DOMAIN` | none | WorkOS AuthKit domain; turns on multi-user sign-in |
+| `T212_WORKOS_API_KEY` | none | WorkOS API key (account page sign-in, Vault for users' Trading 212 keys) |
+| `T212_WORKOS_CLIENT_ID` | none | WorkOS client ID |
+| `T212_WORKOS_COOKIE_PASSWORD` | none | Fernet key sealing the account page's session cookie |
+| `T212_OWNER_EMAIL` | none | The owner's sign-in email: keeps `T212_API_KEY`, existing data, the digest and admin rights |
+| `T212_ADMIN_EMAILS` | none | Comma-separated emails that may use the discovery agent and see all agent traces |
 | `T212_PUBLIC_URL` | `https://$RAILWAY_PUBLIC_DOMAIN` | The server's public base URL, used for OAuth redirects |
-| `T212_MCP_AUTH_TOKEN` | none | Static bearer token for HTTP (ignored when GitHub sign-in is configured) |
+| `T212_MCP_AUTH_TOKEN` | none | Static bearer token for HTTP (single-user; ignored when AuthKit is configured) |
 | `PORT` | `8765` | HTTP port (set by Railway) |
 | `T212_RESEND_API_KEY` | none | Resend API key for `send-digest` |
 | `T212_DIGEST_TO` | none | Digest recipient(s), comma-separated |

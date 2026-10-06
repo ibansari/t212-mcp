@@ -171,10 +171,11 @@ def test_changes_are_measured_against_the_previous_days_set_time_baseline(db_set
     store = Store(db_settings.database_url)
     london = ZoneInfo("Europe/London")
     for day, total in ((date(2026, 10, 5), 1000.0), (date(2026, 10, 6), 1100.0)):
-        store.save_baseline(env="demo", day=day, taken_at=datetime(day.year, day.month, day.day, 7, tzinfo=london),
+        store.save_baseline(user_id="owner", env="demo", day=day, taken_at=datetime(day.year, day.month, day.day, 7, tzinfo=london),
                             portfolio={**PREVIOUS, "total_value": total}, exposure={"all_securities": [], "day": str(day)})
     # a manual digest later on the 6th saved only its own snapshot, not a baseline
-    snapshots.save(db_settings.database_url, digest.snapshot_key("demo"), {**PREVIOUS, "taken_at": "2026-10-06T17:00:00+00:00"})
+    snapshots.save(db_settings.database_url, digest.snapshot_key("demo"), {**PREVIOUS, "taken_at": "2026-10-06T17:00:00+00:00"},
+                   user_id="owner")
 
     later_today = datetime(2026, 10, 6, 18, 0, tzinfo=london)
     portfolio, exposure = digest.comparison_point(store, db_settings, later_today)
@@ -188,8 +189,8 @@ def test_without_baselines_the_last_earlier_day_snapshot_is_used(db_settings):
 
     store = Store(db_settings.database_url)
     key = digest.snapshot_key("demo")
-    snapshots.save(db_settings.database_url, key, {**PREVIOUS, "taken_at": "2026-10-05T17:50:00+00:00", "total_value": 900.0})
-    snapshots.save(db_settings.database_url, key, {**PREVIOUS, "taken_at": "2026-10-06T08:00:00+00:00", "total_value": 950.0})
+    snapshots.save(db_settings.database_url, key, {**PREVIOUS, "taken_at": "2026-10-05T17:50:00+00:00", "total_value": 900.0}, user_id="owner")
+    snapshots.save(db_settings.database_url, key, {**PREVIOUS, "taken_at": "2026-10-06T08:00:00+00:00", "total_value": 950.0}, user_id="owner")
     portfolio, exposure = digest.comparison_point(store, db_settings, datetime(2026, 10, 6, 12, 0, tzinfo=ZoneInfo("Europe/London")))
     assert portfolio["total_value"] == 900.0 and exposure is None  # today's snapshot is not a comparison point
 
@@ -210,7 +211,7 @@ async def test_only_the_set_time_run_saves_a_baseline(db_settings, monkeypatch):
     store = Store(settings.database_url)
     monkeypatch.setattr(digest, "is_local_hour", lambda h, tz, now=None: False)
     await digest.run(settings)
-    assert store.latest_baseline("demo", before=datetime(2100, 1, 1).date()) is None
+    assert store.latest_baseline("demo", before=datetime(2100, 1, 1).date(), user_id="owner") is None
     monkeypatch.setattr(digest, "is_local_hour", lambda h, tz, now=None: True)
     await digest.run(settings)
-    assert store.latest_baseline("demo", before=datetime(2100, 1, 1).date())["portfolio"]["taken_at"] == "2026-10-07T06:00:00+00:00"
+    assert store.latest_baseline("demo", before=datetime(2100, 1, 1).date(), user_id="owner")["portfolio"]["taken_at"] == "2026-10-07T06:00:00+00:00"

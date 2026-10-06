@@ -86,9 +86,9 @@ def look_through(store, positions: list[dict]) -> dict | None:
     return compute_exposure(positions, funds, holdings, status, entities=entity_map(store, None))
 
 
-def previous_exposure(store, before_day: str) -> dict | None:
-    earlier = [h for h in store.exposure_history() if h[0] < before_day]
-    return store.load_exposure(earlier[-1][1]) if earlier else None
+def previous_exposure(store, before_day: str, user_id: str) -> dict | None:
+    earlier = [h for h in store.exposure_history(user_id=user_id) if h[0] < before_day]
+    return store.load_exposure(earlier[-1][1], user_id=user_id) if earlier else None
 
 
 def _fund_symbol(t212_ticker: str) -> str:
@@ -393,12 +393,14 @@ def comparison_point(store, settings: Settings, now: datetime) -> tuple[dict | N
     """(portfolio, look-through) to measure changes against: the most recent set-time baseline from an earlier
     day. Before any baseline exists, fall back to the last digest snapshot and refresh look-through from an
     earlier day."""
-    today = now.date()
-    if base := store.latest_baseline(settings.env, before=today):
+    from .accounts import OWNER_ID
+
+    today, uid = now.date(), OWNER_ID  # the digest is the owner's for now
+    if base := store.latest_baseline(settings.env, before=today, user_id=uid):
         return base["portfolio"], base["exposure"]
     midnight = datetime.combine(today, datetime.min.time(), tzinfo=now.tzinfo)
-    return (snapshots.load_latest(settings.database_url, snapshot_key(settings.env), before=midnight),
-            previous_exposure(store, today.isoformat()))
+    return (snapshots.load_latest(settings.database_url, snapshot_key(settings.env), user_id=uid, before=midnight),
+            previous_exposure(store, today.isoformat(), uid))
 
 
 async def build(settings: Settings) -> Digest:
@@ -439,11 +441,13 @@ async def run(settings: Settings, preview: Path | None = None) -> str:
     if missing:
         raise RuntimeError(f"set {', '.join(missing)} to send the digest")
     email_id = await send_email(settings, digest.subject, digest.html, digest.images)
-    snapshots.save(settings.database_url, snapshot_key(settings.env), digest.snapshot)
+    from .accounts import OWNER_ID
+
+    snapshots.save(settings.database_url, snapshot_key(settings.env), digest.snapshot, user_id=OWNER_ID)
     if is_local_hour(settings.digest_hour, settings.digest_tz):
         from .lookthrough.store import Store
 
         now = datetime.now(ZoneInfo(settings.digest_tz))
-        Store(settings.database_url).save_baseline(env=settings.env, day=now.date(), taken_at=now,
+        Store(settings.database_url).save_baseline(user_id=OWNER_ID, env=settings.env, day=now.date(), taken_at=now,
                                                    portfolio=digest.snapshot, exposure=digest.exposure)
     return f"Sent '{digest.subject}' (Resend id {email_id})"

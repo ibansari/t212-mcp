@@ -10,11 +10,10 @@ from typing import Literal
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
-from pydantic import ValidationError
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 
-from . import snapshots
+from . import accounts, snapshots
 from .client import T212Client
 from .config import Settings
 
@@ -29,18 +28,12 @@ mcp = FastMCP(
     ),
 )
 
-_client: T212Client | None = None
+_client: T212Client | None = None  # pinned client (tests); otherwise each caller gets their own
 
 
-def client() -> T212Client:
-    global _client
-    if _client is None:
-        try:
-            settings = Settings()
-        except ValidationError as e:
-            raise ToolError("Missing configuration: set T212_API_KEY (and T212_API_SECRET) in .env.") from e
-        _client = T212Client(settings)
-    return _client
+async def client() -> T212Client:
+    """The calling user's Trading 212 client (the owner's in stdio/CLI)."""
+    return _client if _client is not None else await accounts.require_client()
 
 
 def _r(x: float | None, nd: int = 2) -> float | None:
@@ -95,12 +88,12 @@ def normalize_position(raw: dict, invested_total: float) -> dict:
     }
 
 
-async def _fetch_summary() -> dict:
-    return normalize_summary(await client().get("/equity/account/summary", ttl=5))
+async def _fetch_summary(c: T212Client | None = None) -> dict:
+    return normalize_summary(await (c or await client()).get("/equity/account/summary", ttl=5))
 
 
-async def _fetch_positions() -> list[dict]:
-    raw = await client().get("/equity/positions", ttl=2)
+async def _fetch_positions(c: T212Client | None = None) -> list[dict]:
+    raw = await (c or await client()).get("/equity/positions", ttl=2)
     invested = sum((p.get("walletImpact") or {}).get("currentValue", 0.0) for p in raw)
     return [normalize_position(p, invested) for p in raw]
 
@@ -164,10 +157,10 @@ async def get_portfolio_update() -> dict:
     def brief(p: dict) -> dict:
         return {k: p[k] for k in ("ticker", "name", "value", "pnl", "pnl_pct", "weight_pct")}
 
-    settings = client().settings
+    settings, user, env = accounts.get_settings(), await accounts.current_user(), (await client()).creds.env
     current = snapshots.make_snapshot(summary, positions)
-    previous = snapshots.load_latest(settings.database_url, settings.env)
-    snapshots.save(settings.database_url, settings.env, current)
+    previous = snapshots.load_latest(settings.database_url, env, user_id=user.id)
+    snapshots.save(settings.database_url, env, current, user_id=user.id)
 
     return {
         "as_of": current["taken_at"],
@@ -186,7 +179,7 @@ async def get_portfolio_update() -> dict:
 @mcp.tool(annotations=READ_ONLY)
 async def get_dividends(limit: int = 20, ticker: str | None = None) -> dict:
     """Recent dividends paid (newest first) and their total, optionally for one ticker."""
-    items = await client().get_paginated("/equity/history/dividends", limit, {"ticker": ticker})
+    items = await (await client()).get_paginated("/equity/history/dividends", limit, {"ticker": ticker})
     dividends = [
         {
             "ticker": d.get("ticker"),
@@ -206,7 +199,7 @@ async def get_dividends(limit: int = 20, ticker: str | None = None) -> dict:
 @mcp.tool(annotations=READ_ONLY)
 async def get_order_history(limit: int = 20, ticker: str | None = None) -> dict:
     """Recent historical orders (newest first) with fill details, optionally for one ticker."""
-    items = await client().get_paginated("/equity/history/orders", limit, {"ticker": ticker})
+    items = await (await client()).get_paginated("/equity/history/orders", limit, {"ticker": ticker})
     orders = []
     for item in items:
         o = item.get("order") or {}
@@ -235,14 +228,23 @@ async def get_order_history(limit: int = 20, ticker: str | None = None) -> dict:
 @mcp.tool(annotations=READ_ONLY)
 async def get_transactions(limit: int = 20) -> dict:
     """Recent cash movements: deposits, withdrawals, fees, transfers and interest."""
-    items = await client().get_paginated("/equity/history/transactions", limit)
+    items = await (await client()).get_paginated("/equity/history/transactions", limit)
     return {"count": len(items), "transactions": items}
 
 
 def _lookthrough_store():
     from .lookthrough.store import Store
 
-    return Store(client().settings.database_url)
+    return Store(accounts.get_settings().database_url)
+
+
+async def _caller_funds() -> tuple[accounts.User, list[dict], set[str]]:
+    """The caller, their positions, and the ISINs of theirs that have look-through data (i.e. their funds)."""
+    user = await accounts.current_user()
+    positions = await _fetch_positions()
+    store = _lookthrough_store()
+    funds = {p["isin"] for p in positions if p.get("isin") and store.load_fund(p["isin"])}
+    return user, positions, funds
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -250,13 +252,17 @@ async def get_etf_exposure(top_n: int = 25, group_by: Literal["security", "count
     """Look-through exposure: what you really own once each ETF is broken into its holdings, combined with your
     direct stocks (e.g. Nvidia held directly plus via several ETFs). Group by underlying security, country or sector.
 
-    Uses the latest daily refresh; check `as_of` and `coverage` for staleness or funds without data.
+    Computed now from your current positions and each fund's latest stored holdings; check `coverage` for funds
+    without data or with old data (refresh with refresh_etf_holdings).
     """
-    store = _lookthrough_store()
-    history = store.exposure_history()
-    if not history:
-        raise ToolError("No look-through data yet. Run refresh_etf_holdings (or `t212-mcp refresh-holdings --allow-agent`).")
-    exp = store.load_exposure(history[-1][1])
+    from datetime import date
+
+    from .digest import look_through
+
+    exp = look_through(_lookthrough_store(), await _fetch_positions())
+    if exp is None:
+        raise ToolError("No look-through data for your funds yet. Run refresh_etf_holdings, then ask again.")
+    exp["as_of"] = date.today().isoformat()
     out = {k: exp[k] for k in ("as_of", "invested_value", "securities_count", "top10_pct", "cash_inside_funds", "coverage")}
     if group_by == "security":
         out["top_securities"] = exp["all_securities"][:top_n]
@@ -277,28 +283,33 @@ async def get_exposure_changes(days: int = 7) -> dict:
 
     from .lookthrough.exposure import exposure_changes
 
-    store = _lookthrough_store()
-    history = store.exposure_history()
+    store, uid = _lookthrough_store(), (await accounts.current_user()).id
+    history = store.exposure_history(user_id=uid)
     if len(history) < 2:
-        raise ToolError("Need at least two daily look-through snapshots to compare.")
+        raise ToolError("Need at least two daily look-through snapshots to compare (one is saved per refresh day).")
     target = (date.today() - timedelta(days=days)).isoformat()
     older = [h for h in history[:-1] if h[0] <= target] or history[:1]
     old_day, old_path = older[-1]
     new_day, new_path = history[-1]
-    return {"from": old_day, "to": new_day, **exposure_changes(store.load_exposure(old_path), store.load_exposure(new_path))}
+    return {"from": old_day, "to": new_day, **exposure_changes(store.load_exposure(old_path, user_id=uid),
+                                                               store.load_exposure(new_path, user_id=uid))}
 
 
 @mcp.tool(annotations=READ_ONLY)
 async def get_holdings_status() -> dict:
-    """Health of the look-through pipeline: per fund, its status (ok/stale/unresolved), recipe, holdings date and
-    last error; plus recent agent runs and the configured LLM."""
+    """Health of the look-through pipeline for your funds: per fund, its status (ok/stale/unresolved), recipe,
+    holdings date and last error; plus your latest refresh, recent agent runs and the configured LLM."""
     from .lookthrough.recipes import Registry
 
-    settings = client().settings
+    settings = accounts.get_settings()
     store = _lookthrough_store()
+    user, positions, _ = await _caller_funds()
+    held = {p["isin"] for p in positions if p.get("isin")}
     recipes = {r.id: r for r in Registry(settings.database_url).all()}
     funds = []
     for rec in store.all_funds():
+        if rec["isin"] not in held and not user.is_admin:  # other users' funds stay private
+            continue
         r = recipes.get(rec.get("recipe_id") or "")
         stats = (rec.get("report") or {}).get("stats", {})
         funds.append(
@@ -314,10 +325,9 @@ async def get_holdings_status() -> dict:
         )
     return {
         "llm_model": settings.llm_model,
-        "refresh": dict(_refresh),
+        "refresh": dict(_refresh.get(user.id, {"state": "idle"})),
         "funds": funds,
-        "recipes": len(recipes),
-        "recent_agent_runs": store.runs(limit=10),
+        "recent_agent_runs": store.runs(limit=10, user_id=None if user.is_admin else user.id),
     }
 
 
@@ -325,33 +335,42 @@ async def get_holdings_status() -> dict:
 async def get_agent_trace(fund: str, limit: int = 3) -> dict:
     """Recent discovery-agent traces for one fund (ticker or ISIN), newest first: each model and tool step with its
     inputs, outputs, tokens, timings and errors, as a tree. Use it to see why the agent failed to find or fix a
-    fund's holdings source. Long texts are truncated."""
+    fund's holdings source. Only for funds you hold (admins: any fund, and `ENTITIES` for company matching). Long
+    texts are truncated."""
+    user, positions, funds = await _caller_funds()
+    held = {k.upper() for p in positions if p.get("isin") in funds for k in (p["isin"], symbol(p["ticker"]))}
+    if not user.is_admin and fund.strip().upper() not in held:
+        raise ToolError(f"'{fund}' isn't one of your funds with look-through data.")
     traces = _lookthrough_store().traces(fund, limit=min(limit, 10))
     if not traces:
         raise ToolError(f"No agent traces for '{fund}'. Traces are recorded when the agent researches a fund.")
     return {"fund": fund, "traces": traces}
 
 
-# The current/last background refresh. A refresh can take minutes, longer than proxies in front of the HTTP
-# server allow for one request, so the tool starts it and get_holdings_status reports on it.
-_refresh: dict = {"state": "idle"}
-_refresh_task: asyncio.Task | None = None
+# The current/last background refresh per user. A refresh can take minutes, longer than proxies in front of the
+# HTTP server allow for one request, so the tool starts it and get_holdings_status reports on it.
+_refresh: dict[int, dict] = {}
+_refresh_tasks: dict[int, asyncio.Task] = {}
+REFRESH_COOLDOWN_S = 600  # per non-admin user
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-async def _run_refresh(settings: Settings, allow_agent: bool) -> None:
-    from .lookthrough.graph import refresh
+async def _run_refresh(settings: Settings, user: accounts.User, c: T212Client, allow_agent: bool) -> None:
+    from .lookthrough.graph import RefreshBusy, refresh
 
+    status = _refresh[user.id]
     try:
-        exp = await refresh(settings, allow_agent=allow_agent)
-        _refresh.update(state="done", finished_at=_now(), as_of=exp["as_of"], results=exp["refresh_results"],
-                        funds_with_data_pct=exp["coverage"]["funds_with_data_pct"])
+        exp = await refresh(settings, allow_agent=allow_agent, client=c, user_id=user.id)
+        status.update(state="done", finished_at=_now(), as_of=exp["as_of"], results=exp["refresh_results"],
+                      funds_with_data_pct=exp["coverage"]["funds_with_data_pct"])
+    except RefreshBusy:
+        status.update(state="failed", finished_at=_now(), error="another refresh is running; try again in a minute")
     except Exception as e:
         logging.getLogger("t212_mcp").exception("look-through refresh failed")
-        _refresh.update(state="failed", finished_at=_now(), error=f"{type(e).__name__}: {e}")
+        status.update(state="failed", finished_at=_now(), error=f"{type(e).__name__}: {e}")
 
 
 @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True})
@@ -359,21 +378,32 @@ async def refresh_etf_holdings(allow_agent: bool = False) -> dict:
     """Start a look-through refresh in the background and return immediately; it does not wait for the result.
     Funds with a working recipe are re-downloaded (fast, no LLM). With allow_agent=True, funds without a working
     recipe are researched by the discovery agent, which can take several minutes and uses the configured LLM.
-    Call get_holdings_status to follow progress (its `refresh` field) and see per-fund results."""
-    global _refresh_task
-    if _refresh_task is not None and not _refresh_task.done():
-        return {"started": False, "reason": "a refresh is already running", **_refresh}
-    settings = client().settings
-    _refresh.clear()
-    _refresh.update(state="running", allow_agent=allow_agent, started_at=_now())
-    _refresh_task = asyncio.create_task(_run_refresh(settings, allow_agent))
-    return {"started": True, **_refresh}
+    Call get_holdings_status to follow progress (its `refresh` field) and see per-fund results. The agent is
+    available to admins only; for others, funds without a saved source are left for an admin to research."""
+    user = await accounts.current_user()
+    c = await client()
+    task, status = _refresh_tasks.get(user.id), _refresh.get(user.id, {})
+    if task is not None and not task.done():
+        return {"started": False, "reason": "a refresh is already running", **status}
+    if not user.is_admin and status.get("started_at"):
+        wait = REFRESH_COOLDOWN_S - (datetime.now(timezone.utc) - datetime.fromisoformat(status["started_at"])).total_seconds()
+        if wait > 0:
+            return {"started": False, "reason": f"refreshed recently; try again in {int(wait // 60) + 1} min", **status}
+    allow_agent = allow_agent and user.is_admin
+    _refresh[user.id] = {"state": "running", "allow_agent": allow_agent, "started_at": _now()}
+    _refresh_tasks[user.id] = asyncio.create_task(_run_refresh(accounts.get_settings(), user, c, allow_agent))
+    return {"started": True, **_refresh[user.id]}
 
 
 @mcp.custom_route("/health", methods=["GET"])
 async def health(request: Request) -> PlainTextResponse:
     """Liveness check for load balancers; needs no token."""
     return PlainTextResponse("ok")
+
+
+from . import account_page  # noqa: E402  (the /account routes)
+
+account_page.register(mcp)
 
 
 @mcp.resource("portfolio://summary", mime_type="application/json")
@@ -395,8 +425,8 @@ def daily_briefing() -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Trading 212 MCP server")
     parser.add_argument("command", nargs="?", default="serve",
-                        choices=["serve", "refresh-holdings", "resolve-entities", "send-digest", "install-schedule",
-                                 "uninstall-schedule"])
+                        choices=["serve", "refresh-holdings", "resolve-entities", "send-digest", "upgrade-multiuser",
+                                 "install-schedule", "uninstall-schedule"])
     parser.add_argument("--http", action="store_true", help="serve over streamable HTTP instead of stdio")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8765)))
@@ -417,7 +447,7 @@ def main() -> None:
         for noisy in ("httpx", "httpx2", "httpcore", "openai", "primp", "ddgs"):
             logging.getLogger(noisy).setLevel(logging.WARNING)
 
-        exp = asyncio.run(refresh(client().settings, allow_agent=args.allow_agent))
+        exp = asyncio.run(refresh(accounts.get_settings(), allow_agent=args.allow_agent))
         print(json.dumps({"as_of": exp["as_of"], "results": exp["refresh_results"],
                           "funds_with_data_pct": exp["coverage"]["funds_with_data_pct"]}, indent=2))
     elif args.command == "resolve-entities":
@@ -430,7 +460,7 @@ def main() -> None:
             logging.getLogger(noisy).setLevel(logging.WARNING)
 
         async def resolve_now() -> dict:
-            settings = client().settings
+            settings = accounts.get_settings()
             store = Store(settings.database_url)
             exposure = digest.look_through(store, await _fetch_positions())
             if not exposure:
@@ -438,6 +468,12 @@ def main() -> None:
             return await entities.resolve(store, settings, exposure["all_securities"], allow_agent=True)
 
         print(asyncio.run(resolve_now()))
+    elif args.command == "upgrade-multiuser":
+        from . import db
+
+        for step in db.upgrade_multiuser(accounts.get_settings().database_url, accounts.OWNER_ID):
+            print(step)
+        print("Database upgraded to the multi-user schema")
     elif args.command == "send-digest":
         from . import digest
 
@@ -445,12 +481,12 @@ def main() -> None:
             print(f"Not {args.only_at_local_hour}:00 in {args.tz}; skipping")
             return
         logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s", datefmt="%H:%M:%S")
-        print(asyncio.run(digest.run(client().settings, preview=args.preview)))
+        print(asyncio.run(digest.run(accounts.get_settings(), preview=args.preview)))
     elif args.command == "install-schedule":
         from .lookthrough.schedule import install
 
         hour, minute = (int(x) for x in args.at.split(":"))
-        print(install(client().settings, hour, minute))
+        print(install(accounts.get_settings(), hour, minute))
     elif args.command == "uninstall-schedule":
         from .lookthrough.schedule import uninstall
 
@@ -459,11 +495,11 @@ def main() -> None:
         from .auth import ConfigError, http_auth
 
         try:
-            mcp.auth = http_auth(client().settings)
+            mcp.auth = http_auth(accounts.get_settings())
         except ConfigError as e:
             parser.error(str(e))
         if mcp.auth is None and args.host not in ("127.0.0.1", "localhost", "::1"):
-            parser.error("set up GitHub sign-in (T212_GITHUB_CLIENT_ID, ...) or T212_MCP_AUTH_TOKEN before serving "
+            parser.error("set up AuthKit sign-in (T212_AUTHKIT_DOMAIN, ...) or T212_MCP_AUTH_TOKEN before serving "
                          "HTTP on a non-local address")
         mcp.run(transport="http", host=args.host, port=args.port)
     else:
