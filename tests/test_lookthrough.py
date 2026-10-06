@@ -256,3 +256,14 @@ def test_agent_run_limit_counts_runs_not_events(settings):
     store.log_run({"isin": HSBC_ISIN, "event": "recipe_saved", "recipe_id": "r", "tokens": 10})
     assert store.agent_runs_today() == 1
     assert [r["event"] for r in store.runs(limit=1)] == ["recipe_saved"]
+
+
+def test_agent_traces_are_kept_per_fund_and_pruned(settings):
+    store = Store(settings.database_url)
+    for i in range(4):
+        store.save_trace(isin=HSBC_ISIN, ticker="HIES", step="discover", model="m",
+                         tree={"type": "chain", "name": "agent", "ms": i, "children": []}, tokens=i, keep=3)
+    traces = store.traces("hies")
+    assert [t["tokens"] for t in traces] == [3, 2, 1]  # newest first, oldest pruned
+    assert store.traces(HSBC_ISIN, limit=1)[0]["tree"]["ms"] == 3
+    assert store.traces("NOPE") == []

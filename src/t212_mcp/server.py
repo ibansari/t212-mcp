@@ -318,6 +318,17 @@ async def get_holdings_status() -> dict:
     }
 
 
+@mcp.tool(annotations=READ_ONLY)
+async def get_agent_trace(fund: str, limit: int = 3) -> dict:
+    """Recent discovery-agent traces for one fund (ticker or ISIN), newest first: each model and tool step with its
+    inputs, outputs, tokens, timings and errors, as a tree. Use it to see why the agent failed to find or fix a
+    fund's holdings source. Long texts are truncated."""
+    traces = _lookthrough_store().traces(fund, limit=min(limit, 10))
+    if not traces:
+        raise ToolError(f"No agent traces for '{fund}'. Traces are recorded when the agent researches a fund.")
+    return {"fund": fund, "traces": traces}
+
+
 # The current/last background refresh. A refresh can take minutes, longer than proxies in front of the HTTP
 # server allow for one request, so the tool starts it and get_holdings_status reports on it.
 _refresh: dict = {"state": "idle"}
@@ -399,7 +410,7 @@ def main() -> None:
         from .lookthrough.graph import refresh
 
         logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
-        for noisy in ("httpx", "httpcore", "primp", "ddgs"):
+        for noisy in ("httpx", "httpx2", "httpcore", "openai", "primp", "ddgs"):
             logging.getLogger(noisy).setLevel(logging.WARNING)
 
         exp = asyncio.run(refresh(client().settings, allow_agent=args.allow_agent))

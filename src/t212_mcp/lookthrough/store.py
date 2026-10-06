@@ -120,6 +120,27 @@ class Store:
             out.append({k: v for k, v in d.items() if v is not None})
         return out
 
+    # ---- agent traces
+    def save_trace(self, *, isin: str, ticker: str, step: str, model: str | None, tree: dict, tokens: int,
+                   keep: int = 30) -> None:
+        with self.sessions.begin() as s:
+            s.add(m.AgentTrace(at=db.utcnow(), isin=isin, ticker=ticker, step=step, model=model, tokens=tokens,
+                               duration_ms=tree.get("ms"), error=tree.get("error"), tree=tree))
+            s.flush()
+            old = s.scalars(select(m.AgentTrace.id).where(m.AgentTrace.isin == isin)
+                            .order_by(m.AgentTrace.at.desc(), m.AgentTrace.id.desc()).offset(keep)).all()
+            for trace_id in old:
+                s.delete(s.get(m.AgentTrace, trace_id))
+
+    def traces(self, fund: str, limit: int = 5) -> list[dict]:
+        """Newest first; `fund` is an ISIN or a ticker."""
+        key = fund.strip().upper()
+        with self.sessions() as s:
+            rows = s.scalars(select(m.AgentTrace).where((m.AgentTrace.isin == key) | (func.upper(m.AgentTrace.ticker) == key))
+                             .order_by(m.AgentTrace.at.desc(), m.AgentTrace.id.desc()).limit(limit))
+            return [{"at": db.iso(r.at), "isin": r.isin, "ticker": r.ticker, "step": r.step, "model": r.model,
+                     "tokens": r.tokens, "duration_ms": r.duration_ms, "error": r.error, "tree": r.tree} for r in rows]
+
     def agent_runs_today(self) -> int:
         midnight = datetime.now().astimezone().replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
         with self.sessions() as s:

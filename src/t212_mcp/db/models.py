@@ -132,6 +132,24 @@ class ExposureSnapshot(Base):
     payload: Mapped[dict]  # the full exposure dict
 
 
+class AgentTrace(Base):
+    """The full run tree of one agent step (discover / draft / repair) for one fund, for debugging."""
+
+    __tablename__ = "agent_traces"
+    __table_args__ = (Index("ix_agent_traces_isin_at", "isin", "at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    at: Mapped[datetime]
+    isin: Mapped[str] = mapped_column(String(12))
+    ticker: Mapped[str] = mapped_column(String(32))
+    step: Mapped[str] = mapped_column(String(12))  # discover | draft | repair
+    model: Mapped[str | None] = mapped_column(String(120))
+    tokens: Mapped[int] = mapped_column(Integer)
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    error: Mapped[str | None] = mapped_column(Text)
+    tree: Mapped[dict]
+
+
 class AgentRun(Base):
     """Events from the discovery agent; also used to enforce the daily run limit."""
 

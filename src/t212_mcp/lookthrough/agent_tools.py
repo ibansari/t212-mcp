@@ -16,6 +16,8 @@ LINK_HINT = re.compile(
     r"holding|constituent|portfolio|composition|basket|download|document|xls|csv|json|export|spreadsheet|factsheet|pcf|fund-data",
     re.I,
 )
+DATA_HINT = re.compile(r"holding|constituent|portfolio|basket|composition|weight", re.I)
+CONSENT_BUTTONS = ("Accept all", "Accept All", "Accept", "I agree", "Agree", "Allow all", "OK")
 NOISE_HOSTS = re.compile(r"google-analytics|googletagmanager|doubleclick|facebook|hotjar|segment|optimizely|onetrust|cookielaw|adobedtm|demdex|newrelic|sentry|clarity", re.I)
 
 _search_provider = "duckduckgo"
@@ -137,34 +139,63 @@ async def fetch_url(url: str) -> str:
     return head + "\n" + _untrusted(summarize_data(r.content, r.headers.get("content-type", ""), str(r.url)))
 
 
+def is_data_request(url: str, content_type: str, resource_type: str) -> bool:
+    """Data a page loads: any fetch/XHR (APIs often send JSON as text/plain), or a file-like response."""
+    if NOISE_HOSTS.search(url):
+        return False
+    if resource_type in ("fetch", "xhr"):
+        return True
+    return any(k in content_type for k in ("json", "csv", "excel", "spreadsheet", "octet-stream")) or bool(
+        re.search(r"\.(xlsx?|csv|json)(\?|$)", url))
+
+
+def rank_data_requests(seen: list[tuple[str, str, int]]) -> list[str]:
+    """(url, description, size) triples, de-duplicated; holdings-looking URLs first, larger responses first
+    within each group (a full holdings list is the big one)."""
+    unique = list(dict.fromkeys(seen))
+    unique.sort(key=lambda item: (0 if DATA_HINT.search(item[0]) else 1, -item[2]))
+    return [desc for _, desc, _ in unique][:40]
+
+
+async def _dismiss_consent(page) -> str:
+    for label in CONSENT_BUTTONS:
+        try:
+            await page.get_by_role("button", name=label, exact=True).first.click(timeout=800)
+            await page.wait_for_timeout(1500)
+            return f"dismissed cookie banner ('{label}')\n"
+        except Exception:
+            continue
+    return ""
+
+
 @tool
 async def browser_open(url: str, click_text: str | None = None) -> str:
-    """Open a page in a real headless browser (works on sites that block plain HTTP). Returns the title, a text
-    excerpt, holdings/download links, and the data requests (JSON/XHR/file URLs) the page made while loading.
-    Optionally clicks the first element whose text contains `click_text` (e.g. 'Holdings') and reports the data
-    requests that triggered. Use it to discover hidden JSON APIs behind holdings tables."""
-    seen: list[str] = []
+    """Open a page in a real headless browser (works on sites that block plain HTTP). Dismisses cookie banners,
+    then returns the title, a text excerpt, holdings/download links, and every data request (fetch/XHR and
+    file downloads) the page made, with status, content type and size, holdings-looking URLs first. Optionally
+    clicks the first element whose text contains `click_text` (e.g. 'Holdings'). Holdings tables are usually
+    filled from one of these data requests: copy its exact URL rather than guessing API paths."""
+    seen: list[tuple[str, str, int]] = []
 
     def on_response(resp):
         ct = resp.headers.get("content-type", "")
-        u = resp.url
-        if NOISE_HOSTS.search(u):
-            return
-        if any(k in ct for k in ("json", "csv", "excel", "spreadsheet", "octet-stream")) or re.search(r"\.(xlsx?|csv|json)(\?|$)", u):
-            seen.append(f"{resp.status} {ct.split(';')[0]} {u}")
+        if is_data_request(resp.url, ct, resp.request.resource_type):
+            size = resp.headers.get("content-length")
+            seen.append((resp.url, f"{resp.status} {resp.request.method} {ct.split(';')[0] or '?'}"
+                                   f"{f' {size}B' if size else ''} {resp.url}", int(size) if size and size.isdigit() else 0))
 
     try:
         async with browser_session() as b:
             b.page.on("response", on_response)
             status = await b.goto(url)
-            clicked = ""
+            clicked = await _dismiss_consent(b.page)
             if click_text:
                 try:
                     await b.page.get_by_text(click_text, exact=False).first.click(timeout=5000)
                     await b.page.wait_for_timeout(3000)
-                    clicked = f"clicked '{click_text}'\n"
+                    clicked += f"clicked '{click_text}'\n"
                 except Exception as e:
-                    clicked = f"could not click '{click_text}': {type(e).__name__}\n"
+                    clicked += f"could not click '{click_text}': {type(e).__name__}\n"
             html = await b.page.content()
             title, text = _html_text(html)
             links = _links(html, b.page.url)
@@ -172,7 +203,7 @@ async def browser_open(url: str, click_text: str | None = None) -> str:
         return f"browser failed: {type(e).__name__}: {e}"
     body = (
         f"title: {title}\n{clicked}text: {text[:MAX_TEXT]}\nlinks:\n" + "\n".join(links)
-        + "\ndata requests made by the page:\n" + "\n".join(list(dict.fromkeys(seen))[:40])
+        + "\ndata requests made by the page (copy URLs exactly):\n" + "\n".join(rank_data_requests(seen))
     )
     return f"browser GET {url} -> HTTP {status}\n" + _untrusted(body)
 
@@ -189,12 +220,16 @@ async def inspect_source(url: str, open_page_first: str | None = None) -> str:
                 await b.goto(open_page_first)
                 status, text = await b.fetch_in_page(target)
             if status != 200:
-                return f"in-browser fetch {target} -> HTTP {status}"
+                return (f"in-browser fetch {target} -> HTTP {status}. The API rejected the request itself, which "
+                        "usually means a wrong path or query parameter: copy the exact URL from browser_open's "
+                        "data requests instead of guessing")
             return f"in-browser fetch {target} -> HTTP 200\n" + _untrusted(summarize_data(text.encode(), "", target))
         async with http_client() as c:
             r = await c.get(target)
         if r.is_error:
-            return f"GET {target} -> HTTP {r.status_code}" + (" (try open_page_first)" if r.status_code in (403, 406) else "")
+            return f"GET {target} -> HTTP {r.status_code}" + (
+                " (this API refuses plain HTTP clients: retry with open_page_first set to a page on the same site)"
+                if r.status_code in (401, 403, 406, 429) else "")
         return f"GET {target} -> HTTP 200, {len(r.content)} bytes\n" + _untrusted(
             summarize_data(r.content, r.headers.get("content-type", ""), str(r.url))
         )

@@ -12,12 +12,13 @@ from langgraph.types import Send
 from pydantic import BaseModel, Field
 
 from ..config import Settings
-from . import agent_tools
+from . import agent_tools, known_sources
 from .exposure import compute_exposure
 from .extractors import ExtractionError, FundHoldings, extract
 from .llm import BudgetExceeded, TokenBudget, chat_model, structured
 from .recipes import Recipe, Registry, StoredRecipe
 from .store import Store
+from .tracing import AgentTracer, summarize
 from .validate import ValidationReport, validate
 
 DISCOVER_PROMPT = """You find where a fund issuer publishes the full, current holdings list of one ETF, so that it can \
@@ -29,8 +30,13 @@ ideally also ISIN and country, plus the date the holdings are as of.
 How to work:
 - Search using the fund's ISIN and name. Prefer the issuer's own website over data aggregators.
 - Open the product page and look for Holdings / Portfolio / Constituents / Download links.
-- Sites often load holdings from a JSON API. browser_open shows the data requests a page makes; pass click_text \
-(e.g. "Holdings") if the table only loads after clicking a tab.
+- Sites often load holdings from a JSON API. browser_open lists every data request a page makes (holdings-looking \
+ones first); pass click_text (e.g. "Holdings") if the table only loads after clicking a tab. Copy the exact URL of \
+the request that returns the holdings into inspect_source. Do not construct or guess API URLs: a single wrong \
+parameter often fails with an empty error.
+- HTTP 401/403/406/429 from a plain download means the site only serves browsers: call inspect_source with \
+open_page_first set to a page on the same site. A 4xx from inside the browser means the URL itself is wrong.
+- If the same approach fails twice, change approach instead of trying more variations of it.
 - Use inspect_source on each promising URL to confirm it really contains this fund's holdings and to read its exact \
 column headers or JSON keys. If plain download is blocked but works from a browser, use open_page_first.
 - Prefer URLs containing the fund's ISIN or ticker, so the same pattern works for the issuer's other funds.
@@ -158,6 +164,19 @@ class Pipeline:
         b.used = state.get("tokens", 0)
         return b
 
+    def _tracer(self, state: FundState, step: str) -> AgentTracer:
+        return AgentTracer(state["fund"]["ticker"], step, start_tokens=state.get("tokens", 0))
+
+    def _keep_traces(self, tracer: AgentTracer, state: FundState) -> None:
+        if not hasattr(self.store, "save_trace"):  # component evals run without a database
+            return
+        for tree in tracer.trees:
+            try:
+                self.store.save_trace(isin=state["fund"]["isin"], ticker=state["fund"]["ticker"], step=tracer.step,
+                                      model=self.settings.llm_model, tree=tree, tokens=summarize(tree)["tokens"])
+            except Exception:
+                log.exception("%s: could not save agent trace", state["fund"]["ticker"])
+
     @staticmethod
     def _fund_text(fund: dict) -> str:
         return f"{fund['name']} (ISIN {fund['isin']}, ticker {fund['ticker']})"
@@ -178,6 +197,19 @@ class Pipeline:
         if last_failure:
             return {"origin": "registry", "recipe": last_failure["recipe"], "error": last_failure["error"],
                     "report": last_failure["report"], "transient": last_failure["transient"]}
+        # No saved recipe for this fund or issuer: try sources verified for its issuer before involving the agent.
+        for r in known_sources.matching(fund["name"]):
+            fh, report, err = await self._try(r, fund)
+            if fh and report and report.ok:
+                stored = self.registry.save(r, discovered_by="known-source")
+                fh.recipe_id = stored.id
+                self.store.save_fund(fund["isin"], status="ok", holdings=fh, recipe_id=stored.id,
+                                     report=report.model_dump(), error=None)
+                log.info("%s: known %s source ok (%d holdings), saved as %s", fund["ticker"], r.issuer,
+                         len(fh.holdings), stored.id)
+                return {"status": "ok", "origin": "known_source", "detail": f"known source, saved as {stored.id}",
+                        "recipe": stored.model_dump()}
+            log.info("%s: known %s source failed: %s", fund["ticker"], r.issuer, (err or "; ".join(report.errors))[:200])
         return {"origin": "registry", "recipe": None}
 
     def route_after_registry(self, state: FundState) -> str:
@@ -196,19 +228,24 @@ class Pipeline:
         agent = create_agent(self.model, agent_tools.TOOLS, system_prompt=DISCOVER_PROMPT)
         history = "\n".join(state.get("history", []))
         ask = f"Find the holdings source for {self._fund_text(fund)}."
+        if known := known_sources.hint(fund["name"]):
+            ask += f"\n\n{known}"
         log.info("%s: discovering holdings source with %s", fund["ticker"], self.settings.llm_model)
         if history:
             ask += f"\n\nPrevious attempts failed:\n{history}"
+        tracer = self._tracer(state, "discover")
         try:
             out = await agent.ainvoke(
                 {"messages": [{"role": "user", "content": ask}]},
-                config={"callbacks": [budget], "recursion_limit": self.settings.agent_recursion_limit},
+                config={"callbacks": [budget, tracer], "recursion_limit": self.settings.agent_recursion_limit},
             )
             findings = out["messages"][-1].text
         except BudgetExceeded as e:
             return {"tokens": budget.used, "error": str(e), "status": "unresolved"}
         except Exception as e:
             return {"tokens": budget.used, "error": f"discovery failed: {type(e).__name__}: {e}", "status": "unresolved"}
+        finally:
+            self._keep_traces(tracer, state)
         log.info("%s: discovery finished (%d tokens so far)", fund["ticker"], budget.used)
         return {"findings": findings, "tokens": budget.used, "error": None}
 
@@ -220,13 +257,16 @@ class Pipeline:
             findings=state.get("findings", ""),
             history=("\nEarlier recipes that failed validation:\n" + "\n".join(history)) if history else "",
         )
+        tracer = self._tracer(state, "draft")
         try:
-            recipe = await structured(self.model, Recipe).ainvoke(prompt, config={"callbacks": [budget]})
+            recipe = await structured(self.model, Recipe).ainvoke(prompt, config={"callbacks": [budget, tracer]})
         except BudgetExceeded as e:
             return {"tokens": budget.used, "error": str(e), "status": "unresolved"}
         except Exception as e:
             return {"tokens": budget.used, "error": f"draft failed: {type(e).__name__}: {e}",
                     "attempts": state.get("attempts", 0) + 1, "recipe": None}
+        finally:
+            self._keep_traces(tracer, state)
         log.info("%s: drafted %s recipe (attempt %d)", state["fund"]["ticker"], recipe.kind, state.get("attempts", 0) + 1)
         return {"recipe": recipe.model_dump(), "tokens": budget.used, "attempts": state.get("attempts", 0) + 1, "origin": "agent"}
 
@@ -265,12 +305,15 @@ class Pipeline:
             failure=failure,
             findings=state.get("findings", ""),
         )
+        tracer = self._tracer(state, "repair")
         try:
-            decision = await structured(self.model, RepairDecision).ainvoke(prompt, config={"callbacks": [budget]})
+            decision = await structured(self.model, RepairDecision).ainvoke(prompt, config={"callbacks": [budget, tracer]})
         except BudgetExceeded as e:
             return {"tokens": budget.used, "error": str(e), "status": "unresolved"}
         except Exception as e:
             decision = RepairDecision(action="rediscover", reason=f"repair call failed: {type(e).__name__}")
+        finally:
+            self._keep_traces(tracer, state)
         log.info("%s: repair decision %s: %s", state["fund"]["ticker"], decision.action, decision.reason)
         update = {"tokens": budget.used, "attempts": state.get("attempts", 0) + 1, "detail": decision.reason}
         if decision.action == "fix" and decision.recipe:

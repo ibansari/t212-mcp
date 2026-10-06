@@ -38,7 +38,7 @@ def main() -> None:
         return
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s", datefmt="%H:%M:%S")
-    for noisy in ("httpx", "httpcore", "primp", "ddgs", "openai"):
+    for noisy in ("httpx", "httpx2", "httpcore", "primp", "ddgs", "openai"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
     settings = Settings()
