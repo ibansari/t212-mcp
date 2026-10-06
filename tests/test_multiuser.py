@@ -164,7 +164,7 @@ async def test_each_caller_sees_only_their_own_account(settings, monkeypatch):
 
 
 @respx.mock
-async def test_non_admins_get_no_agent_and_no_other_funds_traces(settings, monkeypatch):
+async def test_agent_is_on_by_default_for_everyone_but_traces_stay_private(settings, monkeypatch):
     respx.get(f"{BASE}/equity/positions").respond(json=[])
     friend = accounts.User("user_01FRIEND", "friend@example.com", False, False)
     await accounts.save_credentials(settings, friend, Credentials("friend-key", None, "demo"))
@@ -181,13 +181,20 @@ async def test_non_admins_get_no_agent_and_no_other_funds_traces(settings, monke
     monkeypatch.setattr(server, "_refresh_tasks", {})
     as_caller(monkeypatch, "user_01FRIEND", "friend@example.com")
     async with Client(server.mcp) as c:
-        first = (await c.call_tool("refresh_etf_holdings", {"allow_agent": True})).data
+        first = (await c.call_tool("refresh_etf_holdings", {})).data
         await server._refresh_tasks["user_01FRIEND"]
         again = (await c.call_tool("refresh_etf_holdings", {})).data
         with pytest.raises(ToolError, match="isn't one of your funds"):
             await c.call_tool("get_agent_trace", {"fund": "ENTITIES"})
-    assert first["allow_agent"] is False and started == {"allow_agent": False, "user_id": "user_01FRIEND"}
+    assert first["allow_agent"] is True and started == {"allow_agent": True, "user_id": "user_01FRIEND"}
     assert again["started"] is False and "try again" in again["reason"]  # cooldown
+
+    monkeypatch.setattr(accounts, "_settings", settings.model_copy(update={"agent_enabled": False}))
+    monkeypatch.setattr(server, "_refresh", {})
+    async with Client(server.mcp) as c:
+        off = (await c.call_tool("refresh_etf_holdings", {})).data
+        await server._refresh_tasks["user_01FRIEND"]
+    assert off["allow_agent"] is False and started["allow_agent"] is False  # the off switch wins
 
 
 # ---------------------------------------------------------------- upgrade

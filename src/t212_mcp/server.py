@@ -374,12 +374,12 @@ async def _run_refresh(settings: Settings, user: accounts.User, c: T212Client, a
 
 
 @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True})
-async def refresh_etf_holdings(allow_agent: bool = False) -> dict:
+async def refresh_etf_holdings(allow_agent: bool = True) -> dict:
     """Start a look-through refresh in the background and return immediately; it does not wait for the result.
-    Funds with a working recipe are re-downloaded (fast, no LLM). With allow_agent=True, funds without a working
-    recipe are researched by the discovery agent, which can take several minutes and uses the configured LLM.
-    Call get_holdings_status to follow progress (its `refresh` field) and see per-fund results. The agent is
-    available to admins only; for others, funds without a saved source are left for an admin to research."""
+    Funds with a working recipe are re-downloaded (fast, no LLM). Funds without one are researched by the
+    discovery agent (on by default; it can take several minutes and spends OpenAI credit, within the per-fund
+    token budget and the daily agent-run limit); pass allow_agent=False to skip it. Call get_holdings_status to
+    follow progress (its `refresh` field) and see per-fund results."""
     user = await accounts.current_user()
     c = await client()
     task, status = _refresh_tasks.get(user.id), _refresh.get(user.id, {})
@@ -389,7 +389,7 @@ async def refresh_etf_holdings(allow_agent: bool = False) -> dict:
         wait = REFRESH_COOLDOWN_S - (datetime.now(timezone.utc) - datetime.fromisoformat(status["started_at"])).total_seconds()
         if wait > 0:
             return {"started": False, "reason": f"refreshed recently; try again in {int(wait // 60) + 1} min", **status}
-    allow_agent = allow_agent and user.is_admin
+    allow_agent = allow_agent and accounts.get_settings().agent_enabled
     _refresh[user.id] = {"state": "running", "allow_agent": allow_agent, "started_at": _now()}
     _refresh_tasks[user.id] = asyncio.create_task(_run_refresh(accounts.get_settings(), user, c, allow_agent))
     return {"started": True, **_refresh[user.id]}
@@ -430,7 +430,9 @@ def main() -> None:
     parser.add_argument("--http", action="store_true", help="serve over streamable HTTP instead of stdio")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8765)))
-    parser.add_argument("--allow-agent", action="store_true", help="let the LLM agent research funds without a working recipe")
+    parser.add_argument("--no-agent", action="store_true",
+                        help="refresh-holdings: don't let the LLM agent research funds without a working recipe")
+    parser.add_argument("--allow-agent", action="store_true", help=argparse.SUPPRESS)  # the default now; kept for old commands
     parser.add_argument("--at", default="07:30", help="install-schedule: daily time HH:MM")
     parser.add_argument("--preview", type=Path, metavar="FILE.html", help="send-digest: write the email locally instead")
     parser.add_argument("--only-at-local-hour", type=int, metavar="H",
@@ -447,7 +449,8 @@ def main() -> None:
         for noisy in ("httpx", "httpx2", "httpcore", "openai", "primp", "ddgs"):
             logging.getLogger(noisy).setLevel(logging.WARNING)
 
-        exp = asyncio.run(refresh(accounts.get_settings(), allow_agent=args.allow_agent))
+        settings = accounts.get_settings()
+        exp = asyncio.run(refresh(settings, allow_agent=settings.agent_enabled and not args.no_agent))
         print(json.dumps({"as_of": exp["as_of"], "results": exp["refresh_results"],
                           "funds_with_data_pct": exp["coverage"]["funds_with_data_pct"]}, indent=2))
     elif args.command == "resolve-entities":
@@ -465,7 +468,7 @@ def main() -> None:
             exposure = digest.look_through(store, await _fetch_positions())
             if not exposure:
                 return {"error": "no look-through data; run refresh-holdings first"}
-            return await entities.resolve(store, settings, exposure["all_securities"], allow_agent=True)
+            return await entities.resolve(store, settings, exposure["all_securities"], allow_agent=settings.agent_enabled)
 
         print(asyncio.run(resolve_now()))
     elif args.command == "upgrade-multiuser":

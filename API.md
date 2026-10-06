@@ -298,9 +298,9 @@ Annotations: `readOnlyHint: false`, `destructiveHint: false`, `openWorldHint: tr
 
 | Name | Type | Default | Description |
 |---|---|---|---|
-| `allow_agent` | bool | `false` | Let the discovery agent research funds that have no working recipe. Uses OpenAI, can take several minutes, and is limited by `T212_MAX_AGENT_RUNS_PER_DAY` and `T212_AGENT_TOKEN_BUDGET` |
+| `allow_agent` | bool | `true` | Let the discovery agent research funds that have no working recipe. Uses OpenAI, can take several minutes, and is limited by `T212_MAX_AGENT_RUNS_PER_DAY` and `T212_AGENT_TOKEN_BUDGET` |
 
-`allow_agent` is honoured for admins only (it spends OpenAI credit). For everyone else, funds without a saved or known source are left for an admin to research. Non-admins can start one refresh every 10 minutes, and only one refresh runs at a time across all users. Without `allow_agent`, only saved recipes and known sources are used and no LLM is called. Funds run 4 at a time, or one at a time with the agent, so a recipe learned for one fund can be reused by the issuer's other funds.
+The agent is on by default (`allow_agent=true`) for every user. It spends OpenAI credit, capped per fund by `T212_AGENT_TOKEN_BUDGET` and across all users by `T212_MAX_AGENT_RUNS_PER_DAY`, and `T212_AGENT_ENABLED=false` turns it off. Non-admins can start one refresh every 10 minutes, and only one refresh runs at a time across all users. With `allow_agent=false`, only saved recipes and known sources are used and no LLM is called. Funds run 4 at a time, or one at a time with the agent, so a recipe learned for one fund can be reused by the issuer's other funds.
 
 **Returns** `{started, state, allow_agent, started_at}`.
 - `started: true` with `state: "running"` when a refresh was started.
@@ -342,7 +342,7 @@ Annotations: `readOnlyHint: false`, `destructiveHint: false`, `openWorldHint: tr
 
 ```
 t212-mcp [serve] [--http] [--host HOST] [--port PORT]
-t212-mcp refresh-holdings [--allow-agent]
+t212-mcp refresh-holdings [--no-agent]
 t212-mcp resolve-entities
 t212-mcp send-digest [--preview FILE.html] [--only-at-local-hour H] [--tz ZONE]
 t212-mcp install-schedule [--at HH:MM]
@@ -355,7 +355,7 @@ t212-mcp uninstall-schedule
 | `refresh-holdings` | Same as `refresh_etf_holdings`; prints the per-fund results |
 | `resolve-entities` | Group the look-through's securities into companies now, with the agent settling ambiguous cases (see the README) |
 | `send-digest` | Email the morning digest via Resend (see the README). `--preview` writes it locally instead of sending; `--only-at-local-hour 7 --tz Europe/London` exits without sending unless it's 07:00 there |
-| `install-schedule` | macOS: daily `refresh-holdings --allow-agent` via launchd (default 07:30), logging to `~/.t212_mcp/refresh.log` |
+| `install-schedule` | macOS: daily `refresh-holdings` via launchd (default 07:30), logging to `~/.t212_mcp/refresh.log` |
 | `uninstall-schedule` | Remove the launchd job |
 
 ## Configuration
@@ -391,5 +391,6 @@ Read from the environment or `.env`. All names have the `T212_` prefix except `O
 | `T212_AGENT_TOKEN_BUDGET` | `400000` | Token cap per fund |
 | `T212_AGENT_RECURSION_LIMIT` | `40` | Maximum agent steps per discovery |
 | `T212_MAX_REPAIR_ATTEMPTS` | `3` | Draft/repair attempts per fund |
-| `T212_MAX_AGENT_RUNS_PER_DAY` | `5` | Agent runs per day |
+| `T212_MAX_AGENT_RUNS_PER_DAY` | `5` | Agent runs per day, across all users |
+| `T212_AGENT_ENABLED` | `true` | Off switch for the discovery and entity agents (they spend OpenAI credit) |
 | `T212_DATA_DIR` | `~/.t212_mcp` | Where the scheduled job writes its log |

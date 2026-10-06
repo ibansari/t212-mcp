@@ -80,6 +80,7 @@ class Settings(DatabaseSettings):
     agent_recursion_limit: int = 40
     max_repair_attempts: int = 3
     max_agent_runs_per_day: int = 5
+    agent_enabled: bool = True  # off switch for the discovery/entity agent (it spends OpenAI credit)
 
     @field_validator("api_secret", "public_url", "mcp_auth_token",
                      "openai_api_key", "resend_api_key", "digest_to", "openfigi_api_key", "authkit_domain",

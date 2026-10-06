@@ -67,7 +67,7 @@ Anyone you let sign in can connect their own Trading 212 account and ask Claude 
 
 **Guardrails:**
 
-- **The paid discovery agent is for admins only.** Other users' refreshes use saved recipes and known sources; any fund still without a source waits for an admin.
+- **The discovery agent spends OpenAI credit, and it's on by default for everyone.** It's capped at 400k tokens per fund (`T212_AGENT_TOKEN_BUDGET`) and 5 agent runs a day across all users (`T212_MAX_AGENT_RUNS_PER_DAY`). Turn it off with `T212_AGENT_ENABLED=false`. Admins can additionally read every agent trace.
 - **Refresh cooldown:** non-admins can start one refresh every 10 minutes.
 - **Only one refresh runs at a time,** across all users and services, enforced by a database lock.
 - **Privacy:** `get_holdings_status` and `get_agent_trace` only show funds the caller holds.
@@ -115,7 +115,7 @@ Add to `claude_desktop_config.json`:
 | `get_etf_exposure` | Look-through exposure: each ETF broken into its holdings and combined with your direct stocks, grouped by security, country or sector |
 | `get_exposure_changes` | How look-through exposure shifted between the latest refresh and one `days` ago |
 | `get_holdings_status` | Per-fund look-through status (ok/stale/unresolved), recipe, holdings date and last error, plus recent agent runs |
-| `refresh_etf_holdings` | Starts a background re-download of fund holdings; with `allow_agent=true`, funds without a working recipe are researched by the LLM agent. Follow progress with `get_holdings_status` |
+| `refresh_etf_holdings` | Starts a background re-download of fund holdings; funds without a working recipe are researched by the LLM agent (on by default; `allow_agent=false` to skip). Follow progress with `get_holdings_status` |
 
 The server also provides the resource `portfolio://summary` and the prompt `daily_briefing`.
 
@@ -131,7 +131,7 @@ For issuers whose source is already known (`src/t212_mcp/lookthrough/known_sourc
 
 1. **[OpenFIGI](https://www.openfigi.com):** identifies each ISIN (name, security type, exchange). Free, and cached per ISIN.
 2. **Rules:** names that match once class and listing markers are removed (CL A, SP ADR, PREF, GDR 144A) are treated as one company.
-3. **An agent:** settles near-matches, such as "Taiwan Semiconductor Manufac" vs "Taiwan Semiconductor-SP ADR". It only runs with `--allow-agent` or `t212-mcp resolve-entities`, uses the OpenFIGI evidence plus search tools, and returns a structured decision. Its decisions are cached in `security_entities` and traced like the discovery agent.
+3. **An agent:** settles near-matches, such as "Taiwan Semiconductor Manufac" vs "Taiwan Semiconductor-SP ADR". It runs by default (turn it off with `T212_AGENT_ENABLED=false`), uses the OpenFIGI evidence plus search tools, and returns a structured decision. Its decisions are cached in `security_entities` and traced like the discovery agent.
 
 Separately listed affiliates stay separate, e.g. Samsung Electronics vs Samsung Electro-Mechanics, or Merck & Co vs Merck KGaA.
 
@@ -143,7 +143,7 @@ When a recipe fails, the error shows what the source actually contains: its avai
 
 ```bash
 uv run t212-mcp refresh-holdings                 # re-run saved recipes only
-uv run t212-mcp refresh-holdings --allow-agent   # also let the agent find recipes for unresolved funds
+uv run t212-mcp refresh-holdings --no-agent      # saved recipes only, no OpenAI spend (the agent is on by default)
 uv run t212-mcp install-schedule --at 07:30      # macOS: daily refresh (with the agent) via launchd
 uv run t212-mcp uninstall-schedule
 ```

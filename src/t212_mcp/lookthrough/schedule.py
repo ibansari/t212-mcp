@@ -19,7 +19,7 @@ def install(settings: Settings, hour: int = 7, minute: int = 30) -> str:
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     plist = {
         "Label": LABEL,
-        "ProgramArguments": [uv, "--directory", str(PROJECT_ROOT), "run", "t212-mcp", "refresh-holdings", "--allow-agent"],
+        "ProgramArguments": [uv, "--directory", str(PROJECT_ROOT), "run", "t212-mcp", "refresh-holdings"],
         "StartCalendarInterval": {"Hour": hour, "Minute": minute},
         "StandardOutPath": str(log),
         "StandardErrorPath": str(log),
