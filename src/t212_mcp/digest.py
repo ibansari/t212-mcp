@@ -27,6 +27,8 @@ GAIN, LOSS = "#2a78d6", "#e34948"  # diverging blue/red, validated for colour-vi
 INK, INK_MUTED, GRID = "#0b0b0b", "#52514e", "#e7e6e2"
 CURRENCY = {"GBP": "£", "USD": "$", "EUR": "€"}
 NEWS_URL = "https://news.google.com/rss/search?q={q}+when:1d&hl=en-GB&gl=GB&ceid=GB:en"
+# Market-focused: a bare company name also matches shopping deals and product reviews.
+NEWS_QUERY = '"{name}" (stock OR shares OR earnings)'
 
 
 def snapshot_key(env: str) -> str:
@@ -119,7 +121,7 @@ async def fetch_news(targets: list[dict], per_target: int = 3, max_age: timedelt
     sem = asyncio.Semaphore(4)
 
     async def one(client: httpx.AsyncClient, target: dict) -> dict:
-        url = NEWS_URL.format(q=quote_plus(f'"{target["name"]}"'))
+        url = NEWS_URL.format(q=quote_plus(NEWS_QUERY.format(name=target["name"])))
         try:
             async with sem:
                 r = await client.get(url)
@@ -134,9 +136,13 @@ async def fetch_news(targets: list[dict], per_target: int = 3, max_age: timedelt
         results = await asyncio.gather(*(one(c, t) for t in targets))
     seen_titles: set[str] = set()
     out = []
-    for res in results:  # the same story often matches several holdings; show it once
-        res["items"] = [i for i in res["items"] if i["title"].lower() not in seen_titles]
-        seen_titles.update(i["title"].lower() for i in res["items"])
+    for res in results:  # the same story often matches several holdings or comes from several outlets; show it once
+        unique = []
+        for i in res["items"]:
+            if i["title"].lower() not in seen_titles:
+                seen_titles.add(i["title"].lower())
+                unique.append(i)
+        res["items"] = unique
         if res["items"]:
             out.append(res)
     return out

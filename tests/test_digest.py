@@ -70,7 +70,8 @@ def feed(*items):
 @respx.mock
 async def test_fetch_news_keeps_recent_unique_headlines():
     respx.get(url__regex=r"news\.google\.com/rss/search\?q=%22Apple%22").respond(text=feed(
-        ("Apple beats estimates", "Reuters", 2), ("Old Apple story", "FT", 30), ("Chip deal announced", "BBC", 1)))
+        ("Apple beats estimates", "Reuters", 2), ("Old Apple story", "FT", 30), ("Chip deal announced", "BBC", 1),
+        ("Apple beats estimates", "CNBC", 3)))
     respx.get(url__regex=r"news\.google\.com/rss/search\?q=%22Nvidia").respond(text=feed(
         ("Chip deal announced", "BBC", 1), ("Nvidia guidance raised", "CNBC", 3)))
     respx.get(url__regex=r"news\.google\.com/rss/search\?q=%22Tesla").respond(500)
@@ -79,6 +80,7 @@ async def test_fetch_news_keeps_recent_unique_headlines():
     titles = {b["target"]["name"]: [i["title"] for i in b["items"]] for b in news}
     assert titles == {"Apple": ["Chip deal announced", "Apple beats estimates"], "Nvidia Corp": ["Nvidia guidance raised"]}
     assert news[0]["items"][0]["source"] == "BBC"
+    assert "stock+OR+shares+OR+earnings" in str(respx.calls[0].request.url)
 
 
 def test_chart_and_email_render():
