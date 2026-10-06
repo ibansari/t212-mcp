@@ -42,13 +42,13 @@ class Settings(DatabaseSettings):
     env: Literal["live", "demo"] = "live"
     data_dir: Path = Path.home() / ".t212_mcp"  # logs from the scheduled refresh
     # HTTP auth (one is required when binding to anything other than localhost).
-    # Google sign-in: an OAuth client from Google Cloud, the accounts allowed in (comma-separated), and the server's
-    # public URL (defaults to https://$RAILWAY_PUBLIC_DOMAIN on Railway).
-    google_client_id: str | None = None
-    google_client_secret: SecretStr | None = None
-    allowed_emails: str = ""
+    # GitHub sign-in: a GitHub OAuth App, the accounts allowed in (comma-separated usernames or numeric user IDs), and
+    # the server's public URL (defaults to https://$RAILWAY_PUBLIC_DOMAIN on Railway).
+    github_client_id: str | None = None
+    github_client_secret: SecretStr | None = None
+    allowed_github_users: str = ""
     public_url: str | None = None
-    # Or a static bearer token (ignored when Google sign-in is configured).
+    # Or a static bearer token (ignored when GitHub sign-in is configured).
     mcp_auth_token: SecretStr | None = None
 
     # Look-through agent, backed by OpenAI. llm_model is an OpenAI model name; the key is read
@@ -63,7 +63,7 @@ class Settings(DatabaseSettings):
     max_repair_attempts: int = 3
     max_agent_runs_per_day: int = 5
 
-    @field_validator("api_secret", "google_client_id", "google_client_secret", "public_url", "mcp_auth_token",
+    @field_validator("api_secret", "github_client_id", "github_client_secret", "public_url", "mcp_auth_token",
                      "openai_api_key", mode="before")
     @classmethod
     def _blank_is_unset(cls, v):
@@ -75,8 +75,8 @@ class Settings(DatabaseSettings):
         return BASE_URLS[self.env]
 
     @property
-    def allowed_email_set(self) -> set[str]:
-        return {e.strip().lower() for e in self.allowed_emails.split(",") if e.strip()}
+    def allowed_github_user_set(self) -> set[str]:
+        return {u.strip().lstrip("@").lower() for u in self.allowed_github_users.split(",") if u.strip()}
 
     @property
     def public_base_url(self) -> str | None:

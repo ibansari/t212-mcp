@@ -2,7 +2,7 @@
 
 The server speaks the [Model Context Protocol](https://modelcontextprotocol.io). It exposes 11 tools, 1 resource and 1 prompt.
 
-- **HTTP:** `POST <host>/mcp` (streamable HTTP). Requests are authenticated by Google sign-in (OAuth 2.1, limited to `T212_ALLOWED_EMAILS`) or by a static `Authorization: Bearer <token>` (`T212_MCP_AUTH_TOKEN`). Requests without valid credentials get `401`. `GET /health` returns `ok` and needs no authentication.
+- **HTTP:** `POST <host>/mcp` (streamable HTTP). Requests are authenticated by GitHub sign-in (OAuth 2.1, limited to `T212_ALLOWED_GITHUB_USERS`) or by a static `Authorization: Bearer <token>` (`T212_MCP_AUTH_TOKEN`). Requests without valid credentials get `401`. `GET /health` returns `ok` and needs no authentication.
 - **stdio:** `t212-mcp` with no arguments.
 
 Money is in the account currency unless a field names a currency. Percentages are 0–100. Timestamps are ISO 8601.
@@ -348,11 +348,11 @@ Read from the environment or `.env`. All names have the `T212_` prefix except `O
 | `T212_API_SECRET` | none | API secret (older keys work without one) |
 | `T212_ENV` | `live` | `live` or `demo` |
 | `T212_DATABASE_URL` | `postgresql+psycopg://t212:t212@localhost:5432/t212` | Postgres connection |
-| `T212_GOOGLE_CLIENT_ID` | none | Google OAuth client ID; turns on Google sign-in |
-| `T212_GOOGLE_CLIENT_SECRET` | none | Google OAuth client secret |
-| `T212_ALLOWED_EMAILS` | none | Comma-separated Google accounts allowed in (required with Google sign-in) |
+| `T212_GITHUB_CLIENT_ID` | none | GitHub OAuth App client ID; turns on GitHub sign-in |
+| `T212_GITHUB_CLIENT_SECRET` | none | GitHub OAuth App client secret |
+| `T212_ALLOWED_GITHUB_USERS` | none | Comma-separated GitHub usernames or numeric user IDs allowed in (required with GitHub sign-in) |
 | `T212_PUBLIC_URL` | `https://$RAILWAY_PUBLIC_DOMAIN` | The server's public base URL, used for OAuth redirects |
-| `T212_MCP_AUTH_TOKEN` | none | Static bearer token for HTTP (ignored when Google sign-in is configured) |
+| `T212_MCP_AUTH_TOKEN` | none | Static bearer token for HTTP (ignored when GitHub sign-in is configured) |
 | `PORT` | `8765` | HTTP port (set by Railway) |
 | `OPENAI_API_KEY` | none | For the discovery agent |
 | `T212_LLM_MODEL` | `gpt-6.1-sol` | OpenAI model |

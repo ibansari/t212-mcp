@@ -28,35 +28,34 @@ claude mcp add --transport http trading212-http http://127.0.0.1:8765/mcp --head
 
 The server refuses to listen on a non-local address without one of these:
 
-- **Google sign-in** (recommended for anything public): only the Google accounts in `T212_ALLOWED_EMAILS` get in. See [Google sign-in](#google-sign-in).
+- **GitHub sign-in** (recommended for anything public): only the GitHub accounts in `T212_ALLOWED_GITHUB_USERS` get in. See [GitHub sign-in](#github-sign-in).
 - **A static bearer token**: set `T212_MCP_AUTH_TOKEN`, and every request needs `Authorization: Bearer <token>`.
 
 Whichever you use, create the Trading 212 key with read scopes only. Then even a leaked credential can't place orders or move money.
 
-## Google sign-in
+## GitHub sign-in
 
-1. In [Google Cloud Console](https://console.cloud.google.com/) open **Google Auth Platform**:
-   - Set up the consent screen as **External**.
-   - Leave it in **Testing** and add your Google account as a test user. Only test users can sign in at all.
-2. Under **Clients**, create a **Web application** client with this authorized redirect URI: `https://<your-domain>/auth/callback`.
-3. Set these variables:
+1. On GitHub go to **Settings → Developer settings → OAuth Apps → New OAuth App**:
+   - **Homepage URL:** `https://<your-domain>`
+   - **Authorization callback URL:** `https://<your-domain>/auth/callback`
+
+   Register it, then generate a client secret.
+2. Set these variables:
 
    | Variable | Value |
    |---|---|
-   | `T212_GOOGLE_CLIENT_ID` | From step 2 |
-   | `T212_GOOGLE_CLIENT_SECRET` | From step 2 |
-   | `T212_ALLOWED_EMAILS` | Your Google address. Comma-separate several |
+   | `T212_GITHUB_CLIENT_ID` | From step 1 |
+   | `T212_GITHUB_CLIENT_SECRET` | From step 1 |
+   | `T212_ALLOWED_GITHUB_USERS` | Your GitHub username. Comma-separate several. A numeric user ID also works and survives renames |
    | `T212_PUBLIC_URL` | `https://<your-domain>`. Not needed on Railway, which supplies the domain |
 
-4. Connect Claude Code, then run `/mcp` → **Authenticate**. A browser opens: approve the consent page, then sign in with Google.
+3. Connect Claude Code, then run `/mcp` → **Authenticate**. A browser opens: approve the consent page, then authorize the app on GitHub.
 
    ```bash
    claude mcp add --transport http trading212 https://<your-domain>/mcp
    ```
 
-The server checks the Google account behind every request. Any other account gets `401`, even after signing in successfully. Sign-ins are stored encrypted in Postgres, so they survive redeploys.
-
-While the Google app stays in Testing, Google expires its refresh tokens after 7 days, so expect to sign in again weekly. You can publish the app to avoid that, because the `openid` and `email` scopes don't need Google's review. Publishing removes the test-user restriction, but the email allow-list still applies.
+The app asks GitHub only for `read:user`, which identifies you and nothing more. The server checks the GitHub account behind every request, and any other account gets `401`, even after signing in successfully. Sign-ins are stored encrypted in Postgres, so they survive redeploys.
 
 ## Run with Docker Compose
 

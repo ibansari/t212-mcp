@@ -419,7 +419,7 @@ def main() -> None:
         except ConfigError as e:
             parser.error(str(e))
         if mcp.auth is None and args.host not in ("127.0.0.1", "localhost", "::1"):
-            parser.error("set up Google sign-in (T212_GOOGLE_CLIENT_ID, ...) or T212_MCP_AUTH_TOKEN before serving "
+            parser.error("set up GitHub sign-in (T212_GITHUB_CLIENT_ID, ...) or T212_MCP_AUTH_TOKEN before serving "
                          "HTTP on a non-local address")
         mcp.run(transport="http", host=args.host, port=args.port)
     else:
